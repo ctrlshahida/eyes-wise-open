@@ -354,6 +354,147 @@ main {
   word-break: break-word;
 }
 
+/* ---- Belief panel ---- */
+
+.watch,
+.side,
+.numbers {
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+
+.belief h3 {
+  font-size: 2.2rem;
+}
+
+.belief h4 {
+  margin: 0 0 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+}
+
+.belief ul,
+.belief ol {
+  margin: 0;
+  padding-left: 1.1em;
+}
+
+.belief-action {
+  font-weight: 600;
+}
+
+.belief-bars {
+  list-style: none;
+  padding: 0 !important;
+  display: grid;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.belief-bars li {
+  display: grid;
+  grid-template-columns: minmax(0, 9rem) 1fr 3ch;
+  align-items: center;
+  gap: 10px;
+  opacity: 0.65;
+}
+
+.belief-bars li.current {
+  opacity: 1;
+  font-weight: 600;
+}
+
+.belief-bars span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.belief-bars span:last-child {
+  text-align: right;
+}
+
+.belief-bars .bar {
+  height: 8px;
+}
+
+.belief-bars .bar div {
+  transition: width 1s ease;
+}
+
+.belief-evidence {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  font-size: 0.95rem;
+}
+
+.belief-changed {
+  background: var(--cream);
+  padding: 12px 16px;
+}
+
+.belief-log {
+  font-size: 0.9rem;
+}
+
+.belief-log summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.belief-log ol {
+  margin-top: 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.belief-log li span {
+  opacity: 0.7;
+}
+
+.belief .pill {
+  align-self: flex-start;
+}
+
+/* ---- Session summary ---- */
+
+.summary {
+  align-items: stretch;
+}
+
+.summary-stats {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.summary-stats .card {
+  padding: 16px;
+}
+
+.summary-stats .big {
+  font-size: clamp(2rem, 9vw, 3.5rem);
+}
+
+.summary-text {
+  font-size: 1.2rem;
+}
+
+.summary .hero-actions {
+  align-self: flex-start;
+}
+
+@media (min-width: 880px) {
+  .summary-stats {
+    grid-template-columns: repeat(4, 1fr);
+  }
+}
+
 /* ---- Vignette: fades in slowly, never flashes ---- */
 
 .vignette {
@@ -425,19 +566,20 @@ main {
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .dash {
+  .watch {
     grid-template-columns: 1fr 1fr;
     align-items: start;
   }
 
-  .banners,
-  .controls,
-  .dash > .detail {
-    grid-column: 1 / -1;
+  .numbers {
+    grid-template-columns: 1fr 2fr;
+    align-items: stretch;
   }
+}
 
-  .preview {
-    grid-row: span 3;
+@media (max-width: 480px) {
+  .belief-evidence {
+    grid-template-columns: 1fr;
   }
 }
 
