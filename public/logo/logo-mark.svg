@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-30 -30 960 919.4" width="96" height="91.9" role="img" aria-label="Eyes Wise Open">
+  <title>Eyes Wise Open</title>
+  <style>
+    .ewo-lid { transform: translateY(-640px); }
+    .ewo-shut { opacity: 0; }
+    @media (prefers-reduced-motion: no-preference) {
+      .ewo-look { animation: ewo-look 7s ease-in-out infinite; }
+      .ewo-lid { animation: ewo-blink 7s ease-in-out infinite; }
+      .ewo-shut { animation: ewo-shut 7s ease-in-out infinite; }
+    }
+    @keyframes ewo-look {
+      0%, 12% { transform: translateX(0); }
+      18%, 30% { transform: translateX(90px); }
+      36%, 48% { transform: translateX(-90px); }
+      54%, 100% { transform: translateX(0); }
+    }
+    @keyframes ewo-blink {
+      0%, 66% { transform: translateY(-640px); }
+      69%, 71% { transform: translateY(0); }
+      75%, 100% { transform: translateY(-640px); }
+    }
+    @keyframes ewo-shut {
+      0%, 67% { opacity: 0; }
+      69%, 71% { opacity: 1; }
+      73%, 100% { opacity: 0; }
+    }
+  </style>
+  <clipPath id="ewo-clip-m"><path d="M165,429.7C336,56.8 564,56.8 735,429.7C564,802.6 336,802.6 165,429.7Z"/></clipPath>
+  <path d="M0,429.7C270,-143.2 630,-143.2 900,429.7C630,1002.6 270,1002.6 0,429.7Z M165,429.7C336,56.8 564,56.8 735,429.7C564,802.6 336,802.6 165,429.7Z" fill="#202020" fill-rule="evenodd"/>
+  <g clip-path="url(#ewo-clip-m)">
+    <g class="ewo-look">
+      <circle cx="450" cy="429.7" r="173.4" fill="#B6DBA0" stroke="#202020" stroke-width="16"/>
+      <circle cx="450" cy="429.7" r="79.8" fill="#202020"/>
+      <circle cx="415.3" cy="391.5" r="22.5" fill="#fff"/>
+    </g>
+    <rect class="ewo-lid" x="0" y="-687.5" width="900" height="1406.9" fill="#FBF6EA"/>
+    <path class="ewo-shut" d="M205,439.7Q450,695.4 695,439.7" fill="none" stroke="#202020" stroke-width="30" stroke-linecap="round"/>
+  </g>
+</svg>

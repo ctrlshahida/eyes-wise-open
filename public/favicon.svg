@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000">
+  <rect width="1000" height="1000" fill="#163300"/>
+  <path d="M70,500C328,60 672,60 930,500C672,940 328,940 70,500Z M200,500C380,206.7 620,206.7 800,500C620,793.3 380,793.3 200,500Z" fill="#FBF6EA" fill-rule="evenodd"/>
+  <clipPath id="c"><path d="M200,500C380,206.7 620,206.7 800,500C620,793.3 380,793.3 200,500Z"/></clipPath>
+  <g clip-path="url(#c)"><circle cx="500" cy="500" r="136.4" fill="#B6DBA0"/><circle cx="500" cy="500" r="62.7" fill="#163300"/></g>
+</svg>
