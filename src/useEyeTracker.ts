@@ -11,11 +11,13 @@ import {
   MIN_CAL_SAMPLES,
   NORMAL,
   NO_FACE_MS,
-  UNDER_BLINK_PER_MIN,
   averageEar,
   openEyeBaseline,
 } from './blink'
 import type { BlinkKind } from './blink'
+import { agentBreakHandled, agentDeferNudge, agentRecalibrated, agentWasFine, createAgent, updateAgent } from './agent'
+import type { Belief } from './agent'
+import type { SessionStats } from './summary'
 
 export type Phase = 'idle' | 'loading' | 'calibrating' | 'tracking' | 'error'
 export type ErrorKind = 'camera-denied' | 'no-camera' | 'camera-failed' | 'model-failed'
@@ -39,6 +41,7 @@ export interface Snapshot {
   vignette: number // 0..1
   screenSec: number
   nudge: boolean
+  belief: Belief | null // null when the camera is off
 }
 
 const EMPTY: Snapshot = {
@@ -60,6 +63,7 @@ const EMPTY: Snapshot = {
   vignette: 0,
   screenSec: 0,
   nudge: false,
+  belief: null,
 }
 
 // Mutable engine state. Lives in a ref-like object so the 30fps loop never triggers React renders.
@@ -88,6 +92,13 @@ function createEngine() {
     brightness: null as number | null,
     lastBrightT: 0,
     canvas: null as HTMLCanvasElement | null,
+    agent: createAgent(),
+    // Session totals for the summary. Not reset by recalibration or breaks.
+    totalComplete: 0,
+    totalIncomplete: 0,
+    faceSec: 0, // tracked time with a face in view
+    lastFaceT: null as number | null,
+    breaks: 0,
   }
 }
 
@@ -122,12 +133,13 @@ function blinkBlend(shapes: Classifications | undefined) {
   return l === undefined || r === undefined ? null : (l + r) / 2
 }
 
-export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo: boolean) {
+export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo: boolean, callMode: boolean) {
   const engine = useRef<Engine | null>(null)
   engine.current ??= createEngine()
   const m = engine.current
   const [snap, setSnap] = useState<Snapshot>(EMPTY)
   const demoRef = useRef(demo)
+  const callRef = useRef(callMode)
 
   const config = () => (demoRef.current ? DEMO : NORMAL)
 
@@ -146,11 +158,29 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
 
     const warmupSec = tracking ? Math.max(0, Math.ceil(cfg.windowSec - (now - m.trackStart) / 1000)) : cfg.windowSec
     const rate = tracking && !noFace && warmupSec === 0 ? (inWindow.length * 60) / cfg.windowSec : null
-    const underBlinking = rate !== null && rate < UNDER_BLINK_PER_MIN
     const screenSec = tracking && m.screenStart !== null ? (now - m.screenStart) / 1000 : 0
 
-    if (underBlinking && !noFace && screenSec >= cfg.nudgeAfterSec && now >= m.snoozeUntil) m.nudge = true
-    if (!tracking) m.nudge = false
+    // The agent makes the call on vignette and nudge. The tracker only supplies the numbers.
+    const belief =
+      m.phase === 'calibrating' || tracking
+        ? updateAgent(m.agent, {
+            now,
+            rate,
+            complete,
+            incomplete,
+            screenSec,
+            nudgeAfterSec: cfg.nudgeAfterSec,
+            windowSec: cfg.windowSec,
+            brightness: m.brightness,
+            noFace,
+            callMode: callRef.current,
+          })
+        : null
+    const underBlinking = belief !== null && rate !== null && rate < belief.threshold
+    const fatigueAction = belief !== null && belief.hypothesis === 'fatigued' && (belief.action === 'vignette' || belief.action === 'nudge')
+
+    if (belief?.action === 'nudge' && tracking && !noFace && now >= m.snoozeUntil) m.nudge = true
+    if (!tracking || callRef.current || belief?.action === 'ask-light') m.nudge = false
 
     setSnap({
       phase: m.phase,
@@ -168,9 +198,10 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
       complete,
       incomplete,
       underBlinking,
-      vignette: underBlinking ? Math.min(1, 0.4 + 0.6 * (1 - rate / UNDER_BLINK_PER_MIN)) : 0,
+      vignette: !fatigueAction ? 0 : underBlinking ? Math.min(1, 0.4 + 0.6 * (1 - rate / belief.threshold)) : 0.4,
       screenSec,
       nudge: m.nudge,
+      belief,
     })
   }, [m])
 
@@ -239,6 +270,7 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     m.faceLostSince ??= now
     // Away long enough counts as a break: screen time restarts when the face returns.
     if (m.phase === 'tracking' && now - m.faceLostSince >= config().breakAwaySec * 1000) {
+      if (m.screenStart !== null) m.breaks++
       m.screenStart = null
       m.nudge = false
     }
@@ -258,6 +290,8 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     const ear = averageEar(lm, video.videoWidth, video.videoHeight)
     m.ear = ear
     m.faceVisible = true
+    if (m.phase === 'tracking' && m.lastFaceT !== null && now - m.lastFaceT < 500) m.faceSec += (now - m.lastFaceT) / 1000
+    m.lastFaceT = now
 
     if (m.phase === 'calibrating') {
       m.calStart ??= now
@@ -265,7 +299,11 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
       if (now - m.calStart >= CALIBRATION_MS) finishCalibration(now)
     } else if (m.phase === 'tracking' && m.baseline !== null) {
       const kind = m.detector.update(now, ear, blinkBlend(shapes), m.baseline)
-      if (kind) m.events.push({ t: now, kind })
+      if (kind) {
+        m.events.push({ t: now, kind })
+        if (kind === 'complete') m.totalComplete++
+        else m.totalIncomplete++
+      }
     }
   }
 
@@ -359,6 +397,20 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     publish()
   }, [m, teardown, publish])
 
+  // Collect the session's aggregate numbers, then switch the camera off.
+  const endSession = useCallback((): SessionStats => {
+    const blinks = m.totalComplete + m.totalIncomplete
+    const stats: SessionStats = {
+      avgRate: m.faceSec >= 30 ? (blinks * 60) / m.faceSec : null,
+      incompletePct: blinks > 0 ? (m.totalIncomplete / blinks) * 100 : null,
+      screenMin: m.faceSec / 60,
+      breaks: m.breaks,
+      beliefChanges: m.agent.changes,
+    }
+    stop()
+    return stats
+  }, [m, stop])
+
   const recalibrate = useCallback(() => {
     if (m.phase !== 'tracking' && m.phase !== 'calibrating') return
     m.phase = 'calibrating'
@@ -368,6 +420,7 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     m.calStart = null
     m.calSamples = []
     m.calNote = null
+    agentRecalibrated(m.agent, performance.now())
     publish()
   }, [m, publish])
 
@@ -378,11 +431,20 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     m.events = []
     m.snoozeUntil = 0
     m.nudge = false
+    m.breaks++
+    agentBreakHandled(m.agent)
     publish()
   }, [m, publish])
 
   const snooze = useCallback(() => {
     m.snoozeUntil = performance.now() + config().snoozeSec * 1000
+    m.nudge = false
+    agentBreakHandled(m.agent)
+    publish()
+  }, [m, publish])
+
+  const wasFine = useCallback(() => {
+    agentWasFine(m.agent, performance.now())
     m.nudge = false
     publish()
   }, [m, publish])
@@ -391,6 +453,16 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
   useEffect(() => {
     demoRef.current = demo
   }, [demo])
+
+  // A nudge already on screen when a call starts becomes a queued break, not a lost one.
+  useEffect(() => {
+    callRef.current = callMode
+    if (callMode && m.nudge) {
+      agentDeferNudge(m.agent, performance.now())
+      m.nudge = false
+    }
+    if (m.phase === 'calibrating' || m.phase === 'tracking') publish()
+  }, [callMode, m, publish])
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -402,5 +474,5 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     }
   }, [m, publish, teardown])
 
-  return { snap, start, stop, recalibrate, takeBreak, snooze }
+  return { snap, start, stop, endSession, recalibrate, takeBreak, snooze, wasFine }
 }
