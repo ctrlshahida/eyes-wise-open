@@ -5,20 +5,19 @@
 - [Any others, e.g. Copilot, ChatGPT]
 
 ## AI inside the product (at runtime)
-- MediaPipe FaceLandmarker: pretrained ML model for face landmarks. Runs on-device.
-- Gemini API: writes the end-of-session summary from aggregate numbers only.
-- ElevenLabs API: speaks the break nudges.
-- [Presage, if used]
-- The belief panel is rule-based TypeScript. No LLM decides what it believes.
+- MediaPipe FaceLandmarker: pretrained ML model for face landmarks. Runs on-device. This is the only AI in the product at the moment.
+- Not built yet, so not in the product: Gemini summary, ElevenLabs voice, Presage vitals, the two rule-based agents (see PROJECT.md phases 3 to 5).
+- (Earlier builds had a Gemini session summary and a rule-based belief panel. Both were removed on 2026-10-18 when the scope changed to the one-time company check. Their history is in the log below and in git.)
 
 ## What AI wrote vs what we wrote
 | Component | AI generated | Human written or changed |
 |---|---|---|
 | Vite scaffold | Mostly | Config tweaks |
 | Blink detection (EAR) | First draft | Threshold tuning, testing with glasses |
-| Belief panel logic | First draft | Rules and behaviours we specified |
+| Belief panel logic (removed 2026-10-18) | First draft | Rules and behaviours we specified |
 | UI styling | First draft | Colours and layout changes |
-| Server routes | First draft | API keys, deployment |
+| Server (Express, health route) | First draft | API keys, deployment |
+| Employee check flow, result card, comparison chart | First draft | Reference numbers, band cut-offs, testing |
 | Pitch, name, concept | None | All ours |
 
 ## Prompt log
@@ -235,3 +234,282 @@
 - Three made-up sessions each got a Gemini summary in under about 1 second after the first call. The first call took 5.7 seconds.
 - The replies followed the instructions, apart from a small grammar slip ("1 minutes").
 - Not checked in the browser. The user's own server on port 3000 was still running the old code when this was written.
+
+### 2026-10-18: Scope change to the one-time company check. Step 1 (reconcile) and Phase 2 part A (employee flow)
+**Asked:** PROJECT.md was rewritten (one-time company check only, personal mode dropped, no DSE). Step 1: remove everything built for continuous use, keep the blink engine, calibration, error states and demo mode, and make the engine expose a "measure for N seconds" function. Step 2: Phase 2 part A only: intro and consent, camera and 10 second calibration, 90 second (demo: 30 second) measurement while reading a passage, private result card with blinks per minute, incomplete percentage, band, one suggestion, comparison chart with reference numbers in one config file marked UNVERIFIED, privacy badge throughout, styled per the new Design section. No share step, server routes, employer view, agents, Gemini, ElevenLabs or Presage.
+
+**Files created or changed:**
+- `src/reference.ts` (new): reference ranges, band cut-offs and `bandFor()`.
+- `src/useEyeTracker.ts` (rewritten): same camera, model, calibration, EAR and error handling, with the continuous-use parts removed and a new `measure(seconds)` function.
+- `src/blink.ts`: removed the nudge, break-away, snooze and rolling-window settings and the under-blinking threshold; added `MEASURE_SEC`, `DEMO_MEASURE_SEC`, `LOW_LIGHT_SHARE`.
+- `src/App.tsx` (rewritten): intro and consent screen, calibration and measurement screen with the passage, result screen, comparison chart, error screen, demo-mode pill.
+- `src/index.css` (rewritten): new palette and type per the Design section.
+- `src/Illustrations.tsx`: kept the blink and privacy drawings (recoloured), deleted the look-away and workstation drawings.
+- `src/main.tsx`, `package.json`, `package-lock.json`: Oswald replaced by Inter (`@fontsource/inter`).
+- `index.html`: theme colour and description.
+- `server.js`: removed `/api/summary` and the Gemini code; `/api/health` now returns only `{ ok: true }`.
+- Deleted: `src/agent.ts` (belief agent) and `src/summary.ts` (session summary client). Both are in git history.
+- `AI_DISCLOSURE.md`: this entry, and the "AI inside the product" and table sections updated so they no longer claim features that are gone.
+
+**AI-generated:** all of the code above was written by Claude (Sonnet 5.5). The reading passage on screen is original text written by Claude, not taken from anywhere.
+
+**Removed as continuous-use or off-brief:** the dimming vignette, the break nudge and snooze, screen-time timer, break counting, the rolling 60 second blink rate, Call mode, "I was fine", the belief panel and the belief agent (Phase 4 will build the new measurement agent from scratch), the session summary screen and the Gemini route (it was framed around DSE and took screen-time and break numbers, so it would need rewriting in Phase 3 anyway), and the look-away and workstation illustrations.
+
+**Differences from PROJECT.md:**
+- The top bar has the text wordmark and a Demo mode pill, as the Design section says. The animated SVG logo files are still in `public/logo/` but are no longer used.
+- The measurement clock counts only time with a face in view. If the face is lost, the progress bar pauses instead of counting that time. This is the AI's choice, not in PROJECT.md.
+- If a measurement sees no blinks at all, the result screen says "No reading" and shows no band, because that is more likely a tracking failure than a real result. Also the AI's choice.
+- If more than 20% of frames during the measurement were dark, the result card shows a "reading may be less reliable" note. This is a simple check, not the Phase 4 agent.
+
+**Honest notes:**
+- The reference ranges (relaxed 15 to 20, screen use 5 to 7) come only from the figures quoted in PROJECT.md's pitch notes. They have no citation. They are marked UNVERIFIED in `src/reference.ts` and in the chart caption, and must be replaced with sourced numbers.
+- PROJECT.md asks for low, typical and high bands but does not say where the lines go. The AI chose: low is below 5 blinks per minute, high is above 20, typical is between. Those cut-offs are UNVERIFIED and are an AI guess.
+- All blink-detection thresholds are still the first guesses from Phase 1, not tuned and not validated.
+- The intro text says nothing leaves the device. That is true of this build because there is no share step yet. The wording will need to change when the share step is added.
+
+**Checked by the AI:** `npm run build` completes (tsc and vite). `oxlint` reports two warnings, both on code carried over from earlier phases (a ref read during render, and a hook dependency list in `start`). The intro screen was rendered in headless Chrome at 500px width (Chrome's minimum) and the AI looked at the screenshot. The local server answered `/api/health`. Nothing else was run: the calibration, measurement, result card and comparison chart were not rendered or exercised, and nothing was tested with a camera. The user will test.
+
+### 2026-10-18: Intro card: "Taking part is optional" replaced by the "Not a medical device" card
+**Asked:** Remove the "optional" card from the intro and bring the medical card back.
+
+**Files changed:** `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** the third intro card is now the dark red `#7F1D2A` "Not a medical device" card with cream text, as it was before the scope change. The body text was rewritten without any DSE wording: "It does not diagnose anything. A low reading is a prompt to see an optician, not a result to act on by itself." There is no illustration on it, because the old one was a DSE drawing and was deleted. The unused pale card style is still in the CSS.
+
+**Honest note:** PROJECT.md Phase 2, flow step 1, says the intro must say that taking part is optional. That sentence is now gone from the intro, at the user's request. The red card is not in the new Design section, which names only the dark and aqua cards.
+
+**Checked by the AI:** `npm run build` was run after this change (see the reply). The card was not viewed in a browser.
+
+### 2026-10-18: Intro restyled to match a reference screenshot; eye-chart drawing on the medical card
+**Asked:** (1) "with the animation?" on the medical card, then (2) "make it look like this?" with a screenshot of a fintech homepage (centred huge headline, pill buttons, three cards of different widths).
+
+**Files changed:** `src/App.tsx`, `src/index.css`, `src/Illustrations.tsx`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):**
+- New `OpticianIllustration` (an eye chart with a dashed red highlight stepping down the rows, CSS `illo-row`, off under reduced motion) on the red "Not a medical device" card. It replaces the deleted DSE workstation drawing, which showed a DSE checklist the brief now rules out. The user was asked whether to keep this or restore the old drawing and has not answered, so this is a stand-in. The letters are decorative, not a calibrated chart.
+- Layout and type copied from the screenshot's style only (no logo, wordmark, text or artwork): centred hero with tighter headline tracking, bigger primary button with the privacy badge on its own line below, three intro cards in a 1 : 1.3 : 1 grid, card headings in sentence-case Inter semibold in an accent colour instead of Anton caps, drawings moved to the bottom of the cards and run off their edges, top-bar button is now the dark primary pill. Card headings on the result and calibration cards change the same way.
+- Not copied: the screenshot's "Find out more" links, nav items and offers, because they would link to or claim things this app does not have.
+
+**Checked by the AI:** see the reply for whether the build and a screenshot were run after this change.
+
+### 2026-10-18: Rounded rectangles instead of full pills
+**Asked:** "make everything rounded, rectangular".
+
+**Files changed:** `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** I read this as rounded-corner rectangles. Buttons, the privacy badge and the preview status label went from fully round pills (999px) to 14px and 12px corners, progress bars to 6px, the chart track to 10px, the chart marker label to 8px, and the face-found dot and legend swatches from circles to small rounded squares. Cards (32px), banners (24px) and the card drawings keep their rounded corners. The class names `.pill` and `.pill-*` were left as they are. This departs from the Design section in PROJECT.md, which says fully rounded pills, at the user's request. If "rounded, rectangular" meant something else (for example square corners as in the earlier build), say so.
+
+**Follow-up, same day:** forced a line break in the intro headline (`src/App.tsx`) so it reads "Eye check." / "Two minutes." instead of wrapping mid-sentence at desktop width. Claude rendered the intro in headless Chrome at 1280px and looked at it. The card layout, red medical card and drawings looked as intended there. The calibration, measurement and result screens were not rendered, the eye-chart animation was not seen moving, and nothing was tested with a camera.
+
+### 2026-10-18: Undo the screenshot restyle except the centred hero; intro box colours changed
+**Asked:** "go back but only center the hero. I meant change the box colours" (after the "make it look like this" screenshot request).
+
+**Files changed:** `src/index.css`, `src/App.tsx`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):** reverted the layout and type changes from the screenshot restyle: headline size and tracking, lede size, card padding, Anton uppercase card headings, drawings back at the top of the cards, equal three-column grid, button sizes, the Demo mode pill back to secondary, and the privacy badge back beside the start button. Kept: the centred hero, the forced line break in the headline, and the rounded-rectangle corners from the previous request. Intro box colours now follow the screenshot's palette: "What is measured" is forest green `#163300` with a lime heading, "What is shared" is near-black `#202020` with an aqua heading, and the "Not a medical device" card stays dark red. Card headings on dark cards elsewhere (the result and preview cards) now use aqua too. The red medical card is the AI's choice, since the screenshot has no such card.
+
+**Checked by the AI:** see the reply.
+
+### 2026-10-18: Background measurement while working, plus Gemini summary on the result
+**Asked:** "I want the 9-5 version entirely", then (after the user interrupted a question about which version) a screenshot of their pitch notes and the line "one time company assessment / summary tool (to help improve employee welfare)". The notes describe a person running the app once during their 9-5 job in the background, getting an in-depth analysis of their blinking against the recommended rate and what may happen to their eyes if they continue, with the idea of companies using shared data for employee benefits.
+
+**How Claude read that:** still a one-time assessment, not the old all-day tracker. So the vignette, break nudges, belief panel and DSE wording were not brought back. What changed is how the measurement runs and what the result says.
+
+**Files created or changed:** `src/blink.ts`, `src/useEyeTracker.ts`, `src/App.tsx`, `src/summary.ts` (new), `src/index.css`, `server.js`, `index.html`, `PROJECT.md` (tagline, Phase 2 flow steps 3 and 4), `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated by Claude):**
+- The 90 second reading task is gone, with its passage. The measurement is now 10 minutes while the person works (30 seconds in demo mode). The 10 minutes is Claude's choice, not from the pitch notes or PROJECT.md.
+- A "Finish now" button, enabled after 30 seconds of measuring (`finishEarly` in the hook).
+- A banner when the tab is hidden. The measurement clock already only counts frames with a face in view, so hidden time is not counted. Browsers stop sending camera frames to hidden or fully covered windows, so "background" means a visible window beside the work, not a minimised one.
+- `/api/summary` is back on the server with a new prompt: no DSE wording, three sentences, under 80 words, compares the rate with the two reference ranges, says a low rate may leave eyes feeling dry or tired if it continues, gives one tip, mentions no other condition, no statistics, no timeframes, never diagnoses. Same Gemini model settings as before (`gemini-3.5-flash-lite`, minimal thinking, 10 second timeout, key from `.env` on the server only).
+- `src/summary.ts`: sends blinks per minute, incomplete percentage, minutes measured, the band and the two reference ranges. A labelled template summary is used if the key is missing, Gemini fails or the measurement is under 30 seconds.
+- Result screen has a "Your summary" card with a label saying whether Gemini or the template wrote it. The intro and result wording changed from "nothing leaves your device" to say that only these anonymous numbers go to Gemini and video never does.
+
+**Honest notes:**
+- The sentence about low blink rates and dry or tired eyes is a general, widely repeated claim that the prompt asks Gemini to make cautiously. It has no citation in this project. The reference ranges it compares against are still UNVERIFIED.
+- The pitch notes mention companies sharing data to shape benefits. That share step, the server storage and the employer view are not built.
+- The notes say "in-depth analysis". The summary is capped at about 80 words, which is shorter than "in depth".
+
+**Checked by the AI:** `npm run build` completes. The intro was rendered in headless Chrome at 1280px and looked at. The local server returns 503 for `/api/summary` with no key, and a JSON 400 for bad JSON. There is no `.env` in the project folder at the moment, so no real Gemini call was made and the prompt's output was not seen. The measuring screen, hidden-tab banner, Finish now and the result summary card were not rendered. Nothing was tested with a camera.
+
+### 2026-10-18: Square corners
+**Asked:** "make it rectangular".
+
+**Files changed:** `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** every `border-radius` in the CSS is now 0: buttons, the privacy badge, cards, banners, progress bars, the chart, the card drawing panels, and the small face-found dot and legend swatches. The drawings themselves still have their own rounded shapes inside the SVGs. This reverses the earlier "rounded rectangles" change and departs from PROJECT.md, which says pills and 32px cards, at the user's request. Class names such as `.pill` are unchanged.
+
+**Checked by the AI:** `npm run build` was run (see reply). Not viewed in a browser after this change.
+
+### 2026-10-18: Padding and less template-like UI
+**Asked:** "fix the padding and make it look less ai-generated".
+
+**Files changed:** `src/App.tsx`, `src/index.css`, `src/summary.ts`, `server.js`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):**
+- Spacing: more room under the top bar and around the hero, cards have 28px padding and a 20px gap, the drawings sit in a smaller panel (capped at 150px tall) with space before the card heading, the check screen and result screen have consistent 16 to 24px gaps, and the page has more space at the bottom.
+- Result screen: removed the separate "What to do" card, which repeated the summary. The summary card now holds the written summary, its Gemini/template label, and the "Worth discussing with an optician." line for the low band. The static per-band suggestion text is gone: the summary carries the tip. The Gemini prompt no longer asks for the optician line (the app adds it itself), and the template summary now includes a short tip.
+- Copy: shorter lede, card text and consent line on the intro; removed the duplicate "Starting the camera…" line; shortened the chart caption and the result footnote.
+
+**Checked by the AI:** `npm run build` completes. The intro and the result screen were rendered in headless Chrome at 500px width and looked at. The result screen was rendered with made-up numbers through a temporary hook that was removed afterwards (the final build was re-run without it). The calibration screen was only seen at 1280px with Chrome's fake camera before the spacing change, so the new spacing there was not viewed. The measuring screen was not rendered. Nothing was tested with a real camera and no real Gemini call was made.
+
+### 2026-10-18: Animated logo back in the top bar
+**Asked:** "what happened to the old svg animated logo".
+
+**Answer:** Claude replaced it with a text wordmark during the scope-change rewrite, because the new Design section in PROJECT.md says "text wordmark". The logo files were never deleted from `public/logo/`.
+
+**Files changed:** `src/App.tsx` (top bar shows `/logo/logo-horizontal.svg` again), `src/index.css` (`.logo` size, removed the `.wordmark` rule), `PROJECT.md` (top bar line), `AI_DISCLOSURE.md`.
+
+**Notes:** the logo was designed earlier by Claude (see the 2026-10-17 "Animated eye logo" entry) with charcoal letters and a soft-green iris from the old cream palette. It was not recoloured for the lime background. Claude rendered the header in headless Chrome at 1280px and looked at it: the letters and eye read clearly on the lime. The glance and blink animation was not seen moving in that still.
+
+### 2026-10-18: Removed the small caption lines
+**Asked:** The "Pressing the button lets this page use your camera for the check." line looks AI-generated, like eyebrow labels and captions; design it better.
+
+**Files changed:** `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):**
+- Removed the consent caption under the start button. The button already reads "I agree. Start the camera."
+- Removed the explanation under the incomplete-blinks figure, the "Blinks per minute" caption under the chart, the "You can finish early" hint, and the blinks-counted footnote on the result.
+- The UNVERIFIED mark on the reference ranges now sits in each legend line as "(unverified)" instead of a caption. The measuring card's text is one sentence and the time left is bold instead of grey small print.
+- Required labels were kept but folded into the element they belong to: the summary card says "Written by Gemini. Not a medical device." (or says the text is a template, and why). The result screen no longer says "your video never left this device" in the subtitle, because the privacy badge already says it.
+
+**Checked by the AI:** `npm run build` completes. The screens were not rendered after this change.
+
+### 2026-10-18: Intro fits on one screen; medical card is light blue
+**Asked:** (1) "fix the padding on the page so it all fits in one page", (2) "not a medical advice should be this light blue" (with a crop of a light-blue card from the reference screenshot).
+
+**Files changed:** `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):**
+- The "Not a medical device" card is now the pale aqua `#A0E1E1` with forest-green text, replacing the dark red. The unused red card style was removed.
+- Intro spacing now scales with the window height (headline size, hero padding, gaps, card padding and the drawing height use `vh`-based `clamp()` values). On desktop-width windows up to 900px tall the card drawings are hidden so the whole intro fits without scrolling. Phones and narrow windows still scroll, because three stacked cards cannot fit one phone screen.
+- The start button now reads "Start" and the consent line is gone. Those edits to `src/App.tsx` were made by the user in their editor, not by Claude.
+
+**Checked by the AI:** `npm run build` completes. The intro was rendered in headless Chrome at 1366x650, 1440x800 and 1920x950 and looked at; at those sizes the whole page, cards included, is inside the window. 1280x720 was rendered but not looked at. The result, calibration and measuring screens were not re-checked, and the result screen is long by design.
+
+### 2026-10-18: Open-ended 9-5 style session, and why the Gemini summary showed "Server returned 502"
+**Asked:** (1) "can I do a 9-5 but stop whenever, because the 10 min version isn't feasible for a live demo", (2) "fix the gemini summary, why isn't Gemini working?" with a screenshot of the template summary labelled "Server returned 502".
+
+**Files changed:** `src/blink.ts`, `src/useEyeTracker.ts`, `src/App.tsx`, `src/summary.ts`, `server.js`, `PROJECT.md` (Phase 2 flow step 3), `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edits by Claude):**
+- The measurement no longer has a fixed length. It runs until the user presses "Finish and see result", with an 8 hour safety cap (`MEASURE_SEC`). The progress bar is replaced by a time-measured clock. Finish is allowed after 30 seconds, or 10 seconds in demo mode (`DEMO_MIN_FINISH_SEC`). Demo mode no longer changes a measurement length, only that minimum. The result and the Gemini request now carry seconds instead of minutes, and the server turns that into "45 seconds", "12 minutes" or "7.5 hours" for the prompt. Summaries are attempted from 10 seconds of measuring.
+- Summary error text: when the response is not a JSON error from our server, the label now says "The API server did not answer (status N)" instead of "Server returned N".
+
+**Diagnosis of the 502 (by Claude):** the dev page was on Vite port 5173, which forwards `/api` to the Express server on port 3000. Nothing was listening on 3000, so Vite answered 502 with no body. Separately there is no `.env` in the project folder and no `GEMINI_API_KEY` in the environment, so even with Express running the route would answer 503 "Gemini is not configured". Neither is a code bug. With a deliberately fake key on a spare port, `/api/summary` reached Google and returned "Gemini returned 400" (key rejected), so the route, the prompt wiring and the error path work up to that point.
+
+**Not checked:** no real Gemini call has been made in this session because there is no key available here, so the wording of a real reply is unseen. The Finish button and the open-ended timer were not exercised with a camera.
+
+### 2026-10-18: Gemini summary working with the user's key
+**Asked:** "I think it's 5173 not 3000" (about which port to use), after the 502 diagnosis above.
+
+**Files changed:** `server.js`, `AI_DISCLOSURE.md`.
+
+**Findings (by Claude):** the page is on 5173 (Vite), which forwards `/api` to Express on 3000, so both must run. Port 3000 was not running. The `.env` now exists with `GEMINI_API_KEY` set (Claude checked only that the line is well-formed, its length and that it has no quotes; the key was never printed). With Express started, `/api/health` answered `"gemini":true` through 5173 and real summaries came back from `gemini-3.5-flash-lite` for made-up numbers only.
+
+**What changed (AI-generated edits by Claude):**
+- The prompt now receives the duration as a plain phrase ("75 seconds", "1.5 hours") and is told never to write the field name. Before, one reply said "you were measuredFor 75 seconds".
+- The server now works out where the rate sits against the two ranges ("below the typical screen-use range", "above the typical screen-use range but below the typical relaxed range", and so on) and passes that as a fact. Before, Gemini said 12 blinks a minute was "above" both ranges.
+- `/api/summary` retries once after 700 ms when Gemini answers 403, 429 or 5xx. Gemini returned "403 The caller does not have permission" on 3 of about 14 test calls and then worked on repeats, so it looks intermittent. The cause was not found. If it keeps happening, the template summary is shown with its reason.
+
+**Checked by the AI:** about 14 calls with made-up numbers through `/api/summary` on port 5173. Wording was read for low, typical and high cases and looked correct. The page itself was not run against the real server in a browser, and nothing was tested with a camera.
+
+### 2026-10-18: Finish button explained and clock made less likely to stall
+**Asked:** "why can't I click finish and see result".
+
+**Files changed:** `src/useEyeTracker.ts`, `src/App.tsx`, `AI_DISCLOSURE.md`.
+
+**Cause (by Claude, from the code, not reproduced):** the button is disabled until 30 seconds of face-in-view time are measured (10 seconds in demo mode). That clock only advances on camera frames that contain a face while the tab is visible. Claude had removed the hint explaining this in the earlier caption clean-up, so a locked button looked broken. A slow camera or CPU could also stall the clock, because gaps of more than 0.5 seconds between frames were not counted.
+
+**What changed (AI-generated edits by Claude):** while locked, the button now reads "Finish unlocks in Ns". The gap allowed between frames before time stops counting went from 0.5 to 1.5 seconds. Frames separated by a hidden or covered tab still do not count.
+
+**Checked by the AI:** `npm run build` completes. Not run with a camera, so whether the clock advanced in the user's session is unconfirmed.
+
+### 2026-10-18: Gemini 403s: diagnosis and more retries
+**Asked:** the summary showed "Template summary, not written by Gemini: Gemini returned 403". Why isn't Gemini working?
+
+**Files changed:** `server.js`, `AI_DISCLOSURE.md`.
+
+**Diagnosis (by Claude, with the user's key from `.env`, never printed):** a probe script (kept in the session scratchpad, not in the project) sent 12 tiny test calls to each of Gemini's Interactions endpoint and `generateContent`, with the same model. Both returned 200 most of the time and 403 "The caller does not have permission" now and then (3 of 12 and 1 of 12). One 403 said "Gemini API has not been used in project … before or it is disabled". So the app code is not at fault: the key's Google Cloud project appears not to have the Generative Language API fully enabled, or the setting is still propagating, and Google's servers disagree about it. The key is accepted most of the time, so it is not simply invalid.
+
+**What changed (AI-generated edit by Claude):** `/api/summary` now retries up to 4 attempts in total (800 ms apart) on 403, 429 and 5xx, instead of one retry. In a run of 24 requests through the app 22 returned a Gemini summary and 2 failed after 4 attempts in a row (11 retries were needed overall). The page falls back to the labelled template summary when all attempts fail.
+
+**Not fixed:** the underlying project setting. That needs the user in Google AI Studio or Google Cloud Console (confirm the Generative Language API is enabled for the key's project, or create a new key in a new project).
+
+### 2026-10-18: Share-with-company step, anonymous storage, and sources for the reference ranges
+**Asked:** (1) build the "share my anonymous result" step, and advise on whether to store the data with a sponsor partner; (2) "find real sources for the reference ranges".
+
+**Files created or changed:** `src/share.ts` (new), `src/App.tsx`, `src/index.css`, `server.js`, `src/reference.ts`, `.gitignore`, `PROJECT.md` (pitch notes line on blink figures), `AI_DISCLOSURE.md`.
+
+**What was built (AI-generated by Claude):**
+- Result screen has an opt-in "Share with your company" card. Nothing is sent until the button is pressed. The company code is read from `?org=CODE` in the link or typed in. Once sent, the card says it cannot be taken back because nothing links it to the person.
+- `POST /api/assessment` validates the company code (2 to 32 letters, numbers, `-` or `_`), the rate (0 to 200), the incomplete percentage (0 to 100 or null) and the band, then appends one record `{ org, timestamp, blinksPerMinute, incompletePct, band }` to `data/assessments.json`. The timestamp is set by the server. Any other field in the request (a name, an email) is dropped. Writes are queued so simultaneous shares do not overwrite each other, and the file is written then renamed. `data/` is in `.gitignore`. There is a 20,000 record cap.
+- Not built yet: `GET /api/aggregate` and the employer view, so shared data cannot be read back in the app yet. There is also no protection against the same person sharing twice, because there is no identity to check.
+- The intro's "What is shared" card now mentions that sharing is optional and off by default.
+- On the near-black card the secondary button is solid lime, because the pale version looked greyed out.
+
+**Sources (found by Claude by web search, 2026-10-18):** the American Academy of Ophthalmology page "Computers, Digital Devices, and Eye Strain" (27 Jun 2024) was fetched and read directly. It says people "normally blink about 15 times in one minute" and "about 5 to 7 times in a minute while using computers". It names no primary study. The three papers (Bentivoglio et al. 1997; Talens-Estarelles et al. 2021; Chu, Rosenfield and Portello 2014) were seen only through abstracts, search summaries and secondary pages, because PubMed and the publishers' sites blocked automated fetching, so their exact figures were not checked in the full text. Full citations and numbers are in the comment at the top of `src/reference.ts`.
+
+**Honest findings:**
+- 15 to 20 at rest is well supported (AAO about 15, Bentivoglio about 17 with 150 people, Talens-Estarelles 20.4 looking at a distant target).
+- 5 to 7 on screen rests on the AAO line alone. The controlled studies found about 10 (Talens-Estarelles, computer, 95% CI 6.9 to 12.8) and about 15 (Chu et al., 20 minutes reading on a computer, not different from paper). Bentivoglio's 4.5 was reading printed text, not a screen. So the number is the low end of what has been published.
+- The low, typical and high cut-offs are still not from any source: they are the AI's choice and the code comment says so.
+- The "(unverified)" tag in the chart legend was replaced by short citations ("AAO", "AAO, Bentivoglio 1997") and the `UNVERIFIED` flag was removed. If the user would rather keep a caveat on screen, that tag should come back for the 5 to 7 range.
+- The Gemini prompt no longer calls the ranges placeholders; it is told to say "the reference ranges in this app" and name no source.
+
+**Checked by the AI:** `npm run build` completes. The share route was tested on a spare port with a temporary data folder: two valid posts (one with a null incomplete share and extra name and email fields, which were dropped), five simultaneous posts (all 5 stored), and bad company code, bad band, rate out of range, missing field and bad JSON (all answered with a 400 and a short message). The test data was in the session scratchpad and no test records were written to the project's `data/` folder. The intro (1440x800) and the result screen (500px, with made-up numbers through a temporary hook that was removed before the final build) were rendered and looked at. The share button itself was not clicked in a browser, and no camera test was done.
+
+### 2026-10-18: Company code taken from the link
+**Asked:** the company code wording was confusing; for the demo the company will be "wise".
+
+**Files changed:** `src/App.tsx`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** if the page address ends in `?org=CODE` (2 to 32 letters, numbers, `-` or `_`), the code is filled in, shown as "Company code: CODE", and the input box is hidden. Without it, the box is still shown. The card text now says the code is there so results can be grouped by company. For the demo, open the app with `?org=WISE`.
+
+**Note on PROJECT.md:** the Design section says no Wise name anywhere in the UI. The app does not hardcode "Wise": the name only appears if it is in the link. That was the AI's way of keeping to the rule and using Wise as the demo company; the user can decide whether showing the code WISE on screen is acceptable.
+
+**Checked by the AI:** `npm run build` completes. The new card layout was not rendered or clicked.
+
+### 2026-10-18: Company code is typed in again
+**Asked:** "I want to input the company code for the demo."
+
+**Files changed:** `src/App.tsx`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** reverses the previous change. The company code box is always shown and typed in by the user. A link ending in `?org=CODE` still pre-fills it, but it can be edited. "Wise" is not hardcoded anywhere, so it only appears if someone types it or it is in the link.
+
+**Checked by the AI:** `npm run build` completes. The card was not rendered or clicked.
+
+### 2026-10-18: Removed "Only you can see this."
+**Asked:** remove the line "Only you can see this." from the result screen.
+
+**Files changed:** `src/App.tsx`, `src/index.css` (removed the now-unused `.result .lede` rule), `AI_DISCLOSURE.md`.
+
+**Note:** the line was also what told the person the result is private to them before they choose to share (PROJECT.md Phase 2, step 4: shown first and kept private). The share card still says sharing is optional and sends only anonymous numbers.
+
+**Checked by the AI:** `npm run build` completes. The result screen was not re-rendered.
+
+### 2026-10-18: Blink rate over the session, short-session note, result screen redesign, new body font
+**Asked:** (1) "sure" to the plan: renamed band labels, a line saying the app does not check vision, a short-session note, and a blink-rate-over-the-session chart that also gives Gemini a trend; (2) the result cards felt text heavy and AI-looking, and the secondary font should suit the bigger bold text.
+
+**Files changed:** `src/blink.ts`, `src/useEyeTracker.ts`, `src/App.tsx`, `src/summary.ts`, `src/reference.ts`, `src/index.css`, `src/main.tsx`, `server.js`, `package.json`, `package-lock.json`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated by Claude):**
+- The engine records when each blink happens (in measured seconds). `buildTimeline` in `blink.ts` splits a session of two minutes or more into up to 12 equal parts and counts blinks per part. `trendOf` compares the first half with the last half. The result carries `timeline`.
+- New "Through the session" bar chart on the result screen, over the same two reference bands. It only appears for sessions of two minutes or more.
+- Sessions under two minutes (`SHORT_SESSION_SEC`, the AI's choice) show a yellow note saying they are too short to judge.
+- Gemini now also receives `shortSession` and the first-half and second-half rates. The server turns the rates into a fixed phrase ("dropped from 8 to 4 blinks a minute between the first and second half of the session", "stayed about the same", or "rose") and the prompt says to use it as worded and not guess a cause. For short sessions it says only that the session was too short. The template fallback does the same.
+- The two bands were renamed "Relaxed, not at a screen" and "Typical at a screen".
+- Summary card: the optician line is now a lime callout, the summary text is larger, and one small line carries the Gemini/template label plus "Not a medical device, and it does not check your vision. Eye pain or changed sight: see an optician." Share card text was cut to one sentence, with the code box and button on one row. On wide screens the result is two columns.
+- Body font changed from Inter to Barlow Semi Condensed (`@fontsource/barlow-semi-condensed`, weights 400 to 700), chosen by Claude as a semi-condensed grotesque that sits with Anton. Intro card text was shortened.
+- The prompt now asks for 3 short sentences under 70 words. Gemini does not obey word limits closely: replies in testing were 71 to 89 words.
+
+**Checked by the AI:** `npm run build` completes. The result screen was rendered at 1366px and 500px wide using made-up numbers (a 10 minute session with a falling rate) through a temporary hook that was removed before the final build, and the intro at 1440x800; all were looked at. Four real Gemini calls covered a short session, a drop, no change and a rise, and each used the supplied wording. The chart was not checked against a real session, because no camera test has been done. The share button was not clicked in the browser.
+
+### 2026-10-18: Result screen back to one stacked column
+**Asked:** the two-column result layout was not wanted ("I liked it stacked like before, on top of each other").
+
+**Files changed:** `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What changed (AI-generated edit by Claude):** removed the two-column rule for the result screen, so the cards stack in one column on every screen width: the two number cards (side by side on wide screens, as before), then the ranges chart, the session chart, the summary and the share card. Everything else from the previous redesign (font, shorter text, callout) is unchanged.
+
+**Checked by the AI:** `npm run build` completes. The result screen was not re-rendered after this change.

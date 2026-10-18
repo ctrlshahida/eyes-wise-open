@@ -1,4 +1,5 @@
 import express from 'express'
+import fs from 'node:fs/promises'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -18,6 +19,38 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite'
 const GEMINI_THINKING = process.env.GEMINI_THINKING || 'minimal'
 const GEMINI_URL = 'https://generativelanguage.googleapis.com/v1beta/interactions'
 
+// Anonymous shared results live in one JSON file (gitignored, so a git pull never touches it).
+const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, 'data')
+const DATA_FILE = path.join(DATA_DIR, 'assessments.json')
+const MAX_RECORDS = 20_000
+let lastWrite = Promise.resolve()
+
+async function readRecords() {
+  try {
+    return JSON.parse(await fs.readFile(DATA_FILE, 'utf8'))
+  } catch (e) {
+    if (e.code === 'ENOENT') return []
+    throw e
+  }
+}
+
+// Writes are queued one after another so two people sharing at once cannot overwrite each other.
+function addRecord(record) {
+  const run = lastWrite
+    .catch(() => {})
+    .then(async () => {
+      const all = await readRecords()
+      if (all.length >= MAX_RECORDS) throw Object.assign(new Error('full'), { status: 507 })
+      all.push(record)
+      await fs.mkdir(DATA_DIR, { recursive: true })
+      const tmp = DATA_FILE + '.tmp'
+      await fs.writeFile(tmp, JSON.stringify(all))
+      await fs.rename(tmp, DATA_FILE)
+    })
+  lastWrite = run
+  return run
+}
+
 const app = express()
 app.use(express.json({ limit: '4kb' }))
 
@@ -25,17 +58,46 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, gemini: Boolean(process.env.GEMINI_API_KEY) })
 })
 
-// A number within limits, or null. Anything else in the body is ignored, so only aggregates reach Gemini.
+// "45 seconds", "12 minutes" or "7.5 hours", or null.
+function spoken(sec) {
+  if (sec === null) return null
+  if (sec < 90) return `${Math.round(sec)} seconds`
+  if (sec < 5400) return `${Math.round(sec / 60)} minutes`
+  return `${(sec / 3600).toFixed(1)} hours`
+}
+
+// How the rate changed between the first and second half of the session, worked out here so the model does not have to.
+function trendText(t) {
+  const first = t && num(t.first, 0, 200)
+  const second = t && num(t.second, 0, 200)
+  if (first === null || second === null || first === undefined || second === undefined) return null
+  const a = Math.round(first)
+  const b = Math.round(second)
+  if (Math.abs(second - first) < Math.max(1, first * 0.15)) return `stayed about the same between the first and second half of the session (${a} then ${b} blinks a minute)`
+  return `${second < first ? 'dropped' : 'rose'} from ${a} to ${b} blinks a minute between the first and second half of the session`
+}
+
+// Where the rate sits against the two ranges, worked out here so the model does not have to.
+function position(rate, screen, relaxed) {
+  if (rate === null || !screen || !relaxed) return null
+  if (rate < screen[0]) return 'below the typical screen-use range'
+  if (rate <= screen[1]) return 'inside the typical screen-use range'
+  if (rate < relaxed[0]) return 'above the typical screen-use range but below the typical relaxed range'
+  if (rate <= relaxed[1]) return 'inside the typical relaxed range'
+  return 'above the typical relaxed range'
+}
+
+// A number within limits, or null. Anything else in the body is ignored, so only these aggregates reach Gemini.
 function num(v, min, max) {
   return typeof v === 'number' && Number.isFinite(v) && v >= min && v <= max ? Math.round(v * 10) / 10 : null
 }
 
-const SUMMARY_INSTRUCTION = `You write a short end-of-session summary for an office worker using a screen-break reminder.
-Use only the numbers given. Plain English, 2 or 3 sentences, under 70 words, no markdown, no headings.
-Write numbers as digits and round them to whole numbers. Mention the blink rate and the incomplete-blink share when given.
-Frame it around UK DSE (display screen equipment) good practice: regular short breaks and looking away from the screen.
-The app is not a medical device: never diagnose, never name eye conditions, never give medical advice.
-Do not add a disclaimer, the app shows one separately. If a number is null, it was not measured: do not guess it.`
+const SUMMARY_INSTRUCTION = `You write a short analysis for an office worker who just had their blinking measured while they worked at a screen.
+Use only the numbers given. Plain English, exactly 3 short sentences of under 25 words each (under 70 words in total), no markdown, no headings. Write numbers as digits, rounded to whole numbers. "measuredFor" is a duration such as "45 seconds". Work it into a sentence (for example "over 45 seconds"), and never write the word measuredFor.
+Sentence 1: state "position" in your own words, with the rate and the two ranges. Copy the position exactly; never work it out yourself. Say "the reference ranges in this app", never "studies show", and name no source.
+Sentence 2: if shortSession is true, say only that the session was too short to say much and should be treated as a snapshot. Otherwise, if the band is "low", say that blinking less than usual at a screen may leave eyes feeling dry or tired if the pattern continues. If the band is "typical" or "high", say nothing here suggests a problem and that one session is only a snapshot. Use cautious words like "may". Mention no condition other than dry or tired eyes. No statistics and no timeframes. If "trend" is given and shortSession is false, mention it in this sentence using its wording exactly (for example "your rate dropped from 8 to 5 blinks a minute between the first and second half of the session"), and do not guess why.
+Sentence 3: one practical tip, such as looking away from the screen now and then and blinking fully. Do not mention opticians, the app adds that line itself.
+This is not a medical device: never diagnose, never give medical advice. Do not add a disclaimer, the app shows one separately. If a number is null, it was not measured: do not guess it.`
 
 // Pull the text out of an Interactions API response. Tolerates the older generateContent shape too.
 function extractText(data) {
@@ -52,27 +114,45 @@ app.post('/api/summary', async (req, res) => {
   if (!key) return res.status(503).json({ error: 'Gemini is not configured on the server' })
 
   const b = req.body ?? {}
+  const range = (v) => (Array.isArray(v) && num(v[0], 0, 200) !== null && num(v[1], 0, 200) !== null ? [num(v[0], 0, 200), num(v[1], 0, 200)] : null)
+  const screen = range(b.screenRange)
+  const relaxed = range(b.relaxedRange)
+  const rate = num(b.blinksPerMinute, 0, 200)
   const stats = {
-    averageBlinksPerMinute: num(b.avgRate, 0, 200),
+    blinksPerMinute: num(b.blinksPerMinute, 0, 200),
     incompleteBlinkPercent: num(b.incompletePct, 0, 100),
-    screenTimeMinutes: num(b.screenMin, 0, 24 * 60),
-    breaksTaken: num(b.breaks, 0, 1000),
-    agentBeliefChanges: num(b.beliefChanges, 0, 10000),
+    measuredFor: spoken(num(b.seconds, 0, 24 * 3600)),
+    band: ['low', 'typical', 'high'].includes(b.band) ? b.band : null,
+    typicalScreenUseRange: screen,
+    typicalRelaxedRange: relaxed,
+    position: position(rate, screen, relaxed),
+    shortSession: b.shortSession === true,
+    trend: trendText(b.trend),
   }
 
   try {
-    const r = await fetch(GEMINI_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-      body: JSON.stringify({
-        model: GEMINI_MODEL,
-        system_instruction: SUMMARY_INSTRUCTION,
-        input: `Session numbers: ${JSON.stringify(stats)}`,
-        generation_config: { max_output_tokens: 400, thinking_level: GEMINI_THINKING },
-        store: false,
-      }),
-      signal: AbortSignal.timeout(10_000),
+    const body = JSON.stringify({
+      model: GEMINI_MODEL,
+      system_instruction: SUMMARY_INSTRUCTION,
+      input: `Session numbers: ${JSON.stringify(stats)}`,
+      generation_config: { max_output_tokens: 400, thinking_level: GEMINI_THINKING },
+      store: false,
     })
+    const call = () =>
+      fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      })
+    let r = await call()
+    // Gemini answered 403 "caller does not have permission" on roughly 1 call in 4 in testing, on both endpoints,
+    // and the same call worked a moment later. Retry a few times before giving up.
+    for (let attempt = 2; attempt <= 4 && [403, 429, 500, 502, 503].includes(r.status); attempt++) {
+      console.warn('Gemini returned', r.status, `retrying (attempt ${attempt} of 4)`)
+      await new Promise((done) => setTimeout(done, 800))
+      r = await call()
+    }
     const data = await r.json().catch(() => null)
     if (!r.ok) {
       console.error('Gemini error', r.status, (Array.isArray(data) ? data[0] : data)?.error?.message ?? data)
@@ -84,6 +164,29 @@ app.post('/api/summary', async (req, res) => {
   } catch (e) {
     console.error('Gemini request failed', e)
     res.status(502).json({ error: e?.name === 'TimeoutError' ? 'Gemini timed out' : 'Could not reach Gemini' })
+  }
+})
+
+// One anonymous record: company code, time (set here), blinks per minute, share of partial blinks, band.
+// Nothing else in the request body is kept.
+app.post('/api/assessment', async (req, res) => {
+  const b = req.body ?? {}
+  const org = typeof b.org === 'string' ? b.org.trim().toUpperCase() : ''
+  if (!/^[A-Z0-9_-]{2,32}$/.test(org)) return res.status(400).json({ error: 'Enter a company code of 2 to 32 letters or numbers' })
+
+  const rate = num(b.blinksPerMinute, 0, 200)
+  const incomplete = b.incompletePct === null ? null : num(b.incompletePct, 0, 100)
+  const validBand = ['low', 'typical', 'high'].includes(b.band)
+  if (rate === null || (b.incompletePct !== null && incomplete === null) || !validBand) {
+    return res.status(400).json({ error: 'Invalid result' })
+  }
+
+  try {
+    await addRecord({ org, timestamp: new Date().toISOString(), blinksPerMinute: rate, incompletePct: incomplete, band: b.band })
+    res.status(201).json({ ok: true })
+  } catch (e) {
+    console.error('Could not store assessment', e)
+    res.status(e.status === 507 ? 507 : 500).json({ error: 'Could not store your result' })
   }
 })
 

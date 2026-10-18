@@ -26,20 +26,43 @@ export const CALIBRATION_MS = 10_000
 export const MIN_CAL_SAMPLES = 60
 export const MIN_BASELINE = 0.12
 
-export const UNDER_BLINK_PER_MIN = 8
 export const NO_FACE_MS = 3000
 export const LOW_LIGHT_BRIGHTNESS = 55 // mean luma 0-255 of the camera frame
+export const LOW_LIGHT_SHARE = 0.2 // flag a measurement if more than this share of its frames were dark
 
-export interface ModeConfig {
-  windowSec: number // rolling window for the blink rate
-  nudgeAfterSec: number // continuous screen time before a nudge can fire
-  breakAwaySec: number // face absent this long counts as a break
-  snoozeSec: number // "remind me later" delay
+// The measurement runs while the person works and ends when they press Finish. This is only the safety
+// cap (a working day) after which it ends by itself. Seconds of face-in-view time.
+export const MEASURE_SEC = 8 * 60 * 60
+// Finish is allowed once this much has been measured. Demo mode lowers it so the flow is quick on stage.
+export const MIN_FINISH_SEC = 30
+export const DEMO_MIN_FINISH_SEC = 10
+export const SHORT_SESSION_SEC = 120 // under this the result says it is too short to judge (the AI's choice)
+// -----------------------------------------------------------------------------
+
+export interface Segment {
+  startSec: number // offsets in measured (face-in-view) seconds
+  endSec: number
+  rate: number // blinks per minute inside this part
 }
 
-export const NORMAL: ModeConfig = { windowSec: 60, nudgeAfterSec: 20 * 60, breakAwaySec: 20, snoozeSec: 5 * 60 }
-export const DEMO: ModeConfig = { windowSec: 20, nudgeAfterSec: 40, breakAwaySec: 6, snoozeSec: 30 }
-// -----------------------------------------------------------------------------
+// Split the measured time into equal parts and count the blinks in each, so the rate can be drawn over the
+// session. blinkTimes are offsets in measured seconds. Needs at least two minutes, at most 12 parts.
+export function buildTimeline(blinkTimes: number[], seconds: number): Segment[] {
+  const n = Math.min(12, Math.floor(seconds / 60))
+  if (n < 2) return []
+  const len = seconds / n
+  const counts = new Array<number>(n).fill(0)
+  for (const t of blinkTimes) counts[Math.min(n - 1, Math.floor(t / len))]++
+  return counts.map((c, i) => ({ startSec: i * len, endSec: (i + 1) * len, rate: (c * 60) / len }))
+}
+
+// Average rate of the first half of the parts against the last half.
+export function trendOf(timeline: Segment[]) {
+  if (timeline.length < 2) return null
+  const half = Math.floor(timeline.length / 2)
+  const mean = (xs: Segment[]) => xs.reduce((a, s) => a + s.rate, 0) / xs.length
+  return { first: mean(timeline.slice(0, half)), second: mean(timeline.slice(-half)) }
+}
 
 function dist(a: Point, b: Point, w: number, h: number) {
   return Math.hypot((a.x - b.x) * w, (a.y - b.y) * h)

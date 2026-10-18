@@ -2,25 +2,34 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { RefObject } from 'react'
 import { FaceLandmarker, FilesetResolver } from '@mediapipe/tasks-vision'
 import type { Classifications, NormalizedLandmark } from '@mediapipe/tasks-vision'
+import type { Segment } from './blink'
 import {
   BlinkDetector,
   CALIBRATION_MS,
-  DEMO,
   LOW_LIGHT_BRIGHTNESS,
+  LOW_LIGHT_SHARE,
   MIN_BASELINE,
   MIN_CAL_SAMPLES,
-  NORMAL,
   NO_FACE_MS,
   averageEar,
+  buildTimeline,
   openEyeBaseline,
 } from './blink'
-import type { BlinkKind } from './blink'
-import { agentBreakHandled, agentDeferNudge, agentRecalibrated, agentWasFine, createAgent, updateAgent } from './agent'
-import type { Belief } from './agent'
-import type { SessionStats } from './summary'
 
 export type Phase = 'idle' | 'loading' | 'calibrating' | 'tracking' | 'error'
 export type ErrorKind = 'camera-denied' | 'no-camera' | 'camera-failed' | 'model-failed'
+
+// What measure() returns. Anonymous numbers only: no video, no images.
+export interface MeasureResult {
+  seconds: number // face-in-view time actually measured
+  blinks: number
+  complete: number
+  incomplete: number
+  blinksPerMinute: number
+  incompletePct: number | null // null when no blinks were seen
+  lowLight: boolean // the frame was dark for a large share of the measurement
+  timeline: Segment[] // blink rate across the session, empty when it was under two minutes
+}
 
 export interface Snapshot {
   phase: Phase
@@ -32,16 +41,11 @@ export interface Snapshot {
   faceVisible: boolean
   noFace: boolean // no face for 3 seconds or more
   lowLight: boolean
-  rate: number | null // blinks per minute, null while the window fills or the face is gone
-  warmupSec: number
-  windowSec: number
-  complete: number
-  incomplete: number
-  underBlinking: boolean
-  vignette: number // 0..1
-  screenSec: number
-  nudge: boolean
-  belief: Belief | null // null when the camera is off
+  measuring: boolean
+  measureElapsedSec: number // time measured so far, counts only time with a face in view
+  canFinish: boolean // enough has been measured to finish early
+  finishInSec: number // seconds of measuring still needed before Finish unlocks
+  hidden: boolean // the tab is hidden, so the browser is not giving us camera frames
 }
 
 const EMPTY: Snapshot = {
@@ -54,16 +58,24 @@ const EMPTY: Snapshot = {
   faceVisible: false,
   noFace: false,
   lowLight: false,
-  rate: null,
-  warmupSec: 0,
-  windowSec: NORMAL.windowSec,
-  complete: 0,
-  incomplete: 0,
-  underBlinking: false,
-  vignette: 0,
-  screenSec: 0,
-  nudge: false,
-  belief: null,
+  measuring: false,
+  measureElapsedSec: 0,
+  canFinish: false,
+  finishInSec: 0,
+  hidden: false,
+}
+
+interface Measurement {
+  seconds: number // safety cap
+  minFinishSec: number
+  faceSec: number
+  complete: number
+  incomplete: number
+  frames: number
+  darkFrames: number
+  blinkTimes: number[] // when each blink happened, in measured seconds
+  promise: Promise<MeasureResult | null>
+  resolve: (r: MeasureResult | null) => void
 }
 
 // Mutable engine state. Lives in a ref-like object so the 30fps loop never triggers React renders.
@@ -84,21 +96,11 @@ function createEngine() {
     ear: null as number | null,
     faceVisible: false,
     faceLostSince: null as number | null,
-    events: [] as { t: number; kind: BlinkKind }[],
-    trackStart: 0,
-    screenStart: null as number | null,
-    snoozeUntil: 0,
-    nudge: false,
+    lastFaceT: null as number | null,
     brightness: null as number | null,
     lastBrightT: 0,
     canvas: null as HTMLCanvasElement | null,
-    agent: createAgent(),
-    // Session totals for the summary. Not reset by recalibration or breaks.
-    totalComplete: 0,
-    totalIncomplete: 0,
-    faceSec: 0, // tracked time with a face in view
-    lastFaceT: null as number | null,
-    breaks: 0,
+    measurement: null as Measurement | null,
   }
 }
 
@@ -133,55 +135,16 @@ function blinkBlend(shapes: Classifications | undefined) {
   return l === undefined || r === undefined ? null : (l + r) / 2
 }
 
-export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo: boolean, callMode: boolean) {
+export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>) {
   const engine = useRef<Engine | null>(null)
   engine.current ??= createEngine()
   const m = engine.current
   const [snap, setSnap] = useState<Snapshot>(EMPTY)
-  const demoRef = useRef(demo)
-  const callRef = useRef(callMode)
-
-  const config = () => (demoRef.current ? DEMO : NORMAL)
 
   const publish = useCallback(() => {
     const now = performance.now()
-    const cfg = config()
-    const tracking = m.phase === 'tracking'
-
-    const cutoff = now - 60_000
-    while (m.events.length && m.events[0].t < cutoff) m.events.shift()
-
     const noFace = m.faceLostSince !== null && now - m.faceLostSince >= NO_FACE_MS
-    const inWindow = m.events.filter((e) => e.t >= now - cfg.windowSec * 1000)
-    const complete = inWindow.filter((e) => e.kind === 'complete').length
-    const incomplete = inWindow.length - complete
-
-    const warmupSec = tracking ? Math.max(0, Math.ceil(cfg.windowSec - (now - m.trackStart) / 1000)) : cfg.windowSec
-    const rate = tracking && !noFace && warmupSec === 0 ? (inWindow.length * 60) / cfg.windowSec : null
-    const screenSec = tracking && m.screenStart !== null ? (now - m.screenStart) / 1000 : 0
-
-    // The agent makes the call on vignette and nudge. The tracker only supplies the numbers.
-    const belief =
-      m.phase === 'calibrating' || tracking
-        ? updateAgent(m.agent, {
-            now,
-            rate,
-            complete,
-            incomplete,
-            screenSec,
-            nudgeAfterSec: cfg.nudgeAfterSec,
-            windowSec: cfg.windowSec,
-            brightness: m.brightness,
-            noFace,
-            callMode: callRef.current,
-          })
-        : null
-    const underBlinking = belief !== null && rate !== null && rate < belief.threshold
-    const fatigueAction = belief !== null && belief.hypothesis === 'fatigued' && (belief.action === 'vignette' || belief.action === 'nudge')
-
-    if (belief?.action === 'nudge' && tracking && !noFace && now >= m.snoozeUntil) m.nudge = true
-    if (!tracking || callRef.current || belief?.action === 'ask-light') m.nudge = false
-
+    const ms = m.measurement
     setSnap({
       phase: m.phase,
       error: m.error,
@@ -192,25 +155,23 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
       faceVisible: m.faceVisible,
       noFace,
       lowLight: m.brightness !== null && m.brightness < LOW_LIGHT_BRIGHTNESS,
-      rate,
-      warmupSec,
-      windowSec: cfg.windowSec,
-      complete,
-      incomplete,
-      underBlinking,
-      vignette: !fatigueAction ? 0 : underBlinking ? Math.min(1, 0.4 + 0.6 * (1 - rate / belief.threshold)) : 0.4,
-      screenSec,
-      nudge: m.nudge,
-      belief,
+      measuring: ms !== null,
+      measureElapsedSec: ms ? Math.floor(ms.faceSec) : 0,
+      canFinish: ms !== null && ms.faceSec >= ms.minFinishSec,
+      finishInSec: ms ? Math.max(0, Math.ceil(ms.minFinishSec - ms.faceSec)) : 0,
+      hidden: document.hidden,
     })
   }, [m])
 
+  // Closing the camera also abandons any measurement in progress (its promise resolves to null).
   const teardown = useCallback(() => {
     cancelAnimationFrame(m.raf)
     m.stream?.getTracks().forEach((t) => t.stop())
     m.stream = null
     m.landmarker?.close()
     m.landmarker = null
+    m.measurement?.resolve(null)
+    m.measurement = null
     if (videoRef.current) videoRef.current.srcObject = null
   }, [m, videoRef])
 
@@ -231,7 +192,7 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     m.calNote = note
   }
 
-  const finishCalibration = (now: number) => {
+  const finishCalibration = () => {
     if (m.calSamples.length < MIN_CAL_SAMPLES) {
       restartCalibration('We lost sight of your face during calibration. Look at the screen and we will try again.')
       return
@@ -243,10 +204,7 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     }
     m.baseline = baseline
     m.calNote = null
-    m.events = []
     m.detector.reset()
-    m.trackStart = now
-    m.screenStart ??= now
     m.phase = 'tracking'
   }
 
@@ -263,46 +221,54 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     m.brightness = sum / (px.length / 4)
   }
 
+  const finishMeasurement = (ms: Measurement) => {
+    const blinks = ms.complete + ms.incomplete
+    m.measurement = null
+    ms.resolve({
+      seconds: ms.faceSec,
+      blinks,
+      complete: ms.complete,
+      incomplete: ms.incomplete,
+      blinksPerMinute: (blinks * 60) / ms.faceSec,
+      incompletePct: blinks > 0 ? (ms.incomplete / blinks) * 100 : null,
+      lowLight: ms.frames > 0 && ms.darkFrames / ms.frames > LOW_LIGHT_SHARE,
+      timeline: buildTimeline(ms.blinkTimes, ms.faceSec),
+    })
+  }
+
   const onNoFace = (now: number) => {
     m.faceVisible = false
     m.ear = null
     m.detector.reset()
     m.faceLostSince ??= now
-    // Away long enough counts as a break: screen time restarts when the face returns.
-    if (m.phase === 'tracking' && now - m.faceLostSince >= config().breakAwaySec * 1000) {
-      if (m.screenStart !== null) m.breaks++
-      m.screenStart = null
-      m.nudge = false
-    }
   }
 
   const onFace = (now: number, video: HTMLVideoElement, lm: NormalizedLandmark[], shapes: Classifications | undefined) => {
-    if (m.faceLostSince !== null) {
-      // Time with no face must not count as time without blinking.
-      if (now - m.faceLostSince >= NO_FACE_MS) {
-        m.events = []
-        m.trackStart = now
-      }
-      m.faceLostSince = null
-    }
-    if (m.phase === 'tracking') m.screenStart ??= now
+    m.faceLostSince = null
+    // Time with no face is not counted: the measurement clock only runs while the face is in view.
+    const dt = m.lastFaceT !== null && now - m.lastFaceT < 1500 ? (now - m.lastFaceT) / 1000 : 0
+    m.lastFaceT = now
 
     const ear = averageEar(lm, video.videoWidth, video.videoHeight)
     m.ear = ear
     m.faceVisible = true
-    if (m.phase === 'tracking' && m.lastFaceT !== null && now - m.lastFaceT < 500) m.faceSec += (now - m.lastFaceT) / 1000
-    m.lastFaceT = now
 
     if (m.phase === 'calibrating') {
       m.calStart ??= now
       m.calSamples.push(ear)
-      if (now - m.calStart >= CALIBRATION_MS) finishCalibration(now)
+      if (now - m.calStart >= CALIBRATION_MS) finishCalibration()
     } else if (m.phase === 'tracking' && m.baseline !== null) {
       const kind = m.detector.update(now, ear, blinkBlend(shapes), m.baseline)
-      if (kind) {
-        m.events.push({ t: now, kind })
-        if (kind === 'complete') m.totalComplete++
-        else m.totalIncomplete++
+      const ms = m.measurement
+      if (ms) {
+        ms.faceSec += dt
+        ms.frames++
+        if (m.brightness !== null && m.brightness < LOW_LIGHT_BRIGHTNESS) ms.darkFrames++
+        if (kind) {
+          ms[kind]++
+          ms.blinkTimes.push(ms.faceSec)
+        }
+        if (ms.faceSec >= ms.seconds) finishMeasurement(ms)
       }
     }
   }
@@ -397,73 +363,44 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     publish()
   }, [m, teardown, publish])
 
-  // Collect the session's aggregate numbers, then switch the camera off.
-  const endSession = useCallback((): SessionStats => {
-    const blinks = m.totalComplete + m.totalIncomplete
-    const stats: SessionStats = {
-      avgRate: m.faceSec >= 30 ? (blinks * 60) / m.faceSec : null,
-      incompletePct: blinks > 0 ? (m.totalIncomplete / blinks) * 100 : null,
-      screenMin: m.faceSec / 60,
-      breaks: m.breaks,
-      beliefChanges: m.agent.changes,
-    }
-    stop()
-    return stats
-  }, [m, stop])
+  // Measure until finishEarly() is called (allowed after minFinishSec) or the maxSec cap is hit, and
+  // return the blink counts and rate. Only time with a face in view counts.
+  // Needs a finished calibration. Resolves to null if the measurement is abandoned
+  // (recalibrate, stop, camera error). Calling it again while one is running returns the same promise.
+  const measure = useCallback(
+    (seconds: number, minFinishSec: number): Promise<MeasureResult | null> => {
+      if (m.measurement) return m.measurement.promise
+      if (m.phase !== 'tracking') return Promise.resolve(null)
+      let resolve!: Measurement['resolve']
+      const promise = new Promise<MeasureResult | null>((r) => (resolve = r))
+      m.measurement = { seconds, minFinishSec, faceSec: 0, complete: 0, incomplete: 0, frames: 0, darkFrames: 0, blinkTimes: [], promise, resolve }
+      m.detector.reset()
+      publish()
+      return promise
+    },
+    [m, publish],
+  )
 
+  // End the measurement now with what has been counted so far.
+  const finishEarly = useCallback(() => {
+    const ms = m.measurement
+    if (ms && ms.faceSec >= ms.minFinishSec) finishMeasurement(ms)
+  }, [m])
+
+  // Glasses on or off: take a new baseline. Any measurement so far is discarded.
   const recalibrate = useCallback(() => {
     if (m.phase !== 'tracking' && m.phase !== 'calibrating') return
+    m.measurement?.resolve(null)
+    m.measurement = null
     m.phase = 'calibrating'
     m.detector.reset()
-    m.events = []
-    m.nudge = false
     m.calStart = null
     m.calSamples = []
     m.calNote = null
-    agentRecalibrated(m.agent, performance.now())
     publish()
   }, [m, publish])
 
-  const takeBreak = useCallback(() => {
-    const now = performance.now()
-    m.screenStart = now
-    m.trackStart = now
-    m.events = []
-    m.snoozeUntil = 0
-    m.nudge = false
-    m.breaks++
-    agentBreakHandled(m.agent)
-    publish()
-  }, [m, publish])
-
-  const snooze = useCallback(() => {
-    m.snoozeUntil = performance.now() + config().snoozeSec * 1000
-    m.nudge = false
-    agentBreakHandled(m.agent)
-    publish()
-  }, [m, publish])
-
-  const wasFine = useCallback(() => {
-    agentWasFine(m.agent, performance.now())
-    m.nudge = false
-    publish()
-  }, [m, publish])
-
-  // Keep the demo flag current and refresh the UI a few times a second while the camera is running.
-  useEffect(() => {
-    demoRef.current = demo
-  }, [demo])
-
-  // A nudge already on screen when a call starts becomes a queued break, not a lost one.
-  useEffect(() => {
-    callRef.current = callMode
-    if (callMode && m.nudge) {
-      agentDeferNudge(m.agent, performance.now())
-      m.nudge = false
-    }
-    if (m.phase === 'calibrating' || m.phase === 'tracking') publish()
-  }, [callMode, m, publish])
-
+  // Refresh the UI a few times a second while the camera is running.
   useEffect(() => {
     const id = setInterval(() => {
       if (m.phase === 'calibrating' || m.phase === 'tracking') publish()
@@ -474,5 +411,5 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>, demo
     }
   }, [m, publish, teardown])
 
-  return { snap, start, stop, endSession, recalibrate, takeBreak, snooze, wasFine }
+  return { snap, start, stop, measure, finishEarly, recalibrate }
 }
