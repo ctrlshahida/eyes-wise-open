@@ -1,5 +1,9 @@
 import { useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
 import { ComparisonChart } from './charts'
+import { FlameIllustration } from './Illustrations'
+import { CALL_LABEL, PRIORITY_LABEL, createAgent, updateAgent } from './cohortAgent'
+import type { AgentState, Priority } from './cohortAgent'
 
 // Employer view: group numbers only. The server never sends an individual result, and sends nothing
 // until at least 5 responses are behind it.
@@ -11,6 +15,7 @@ interface Aggregate {
   realIncluded: boolean // real responses only join the numbers once there are at least 5 of them
   realCount: number | null
   sampleCount: number
+  sampleExtraMax: number
   count: number
   avgRate: number
   avgIncompletePct: number | null
@@ -19,30 +24,32 @@ interface Aggregate {
 }
 type Reply = Aggregate | { org: string; enough: false; needed: number }
 
-// Where the recommended action changes. The AI's choice, not from a source.
-const LOW_SHARE_HIGH = 40
-const LOW_SHARE_MID = 20
-
-function recommend(lowShare: number) {
-  if (lowShare >= LOW_SHARE_HIGH) {
-    return 'A large share of the team blinks less than usual at a screen. Offer eye tests as a benefit and build short screen breaks into the working day.'
-  }
-  if (lowShare >= LOW_SHARE_MID) {
-    return 'A noticeable share of the team is in the low band. Make eye tests easy to book and encourage regular breaks away from the screen.'
-  }
-  return 'Few people are in the low band. Keep eye tests available and run the check again next quarter.'
+// One numbered section of the agent panel: a real heading, so screen readers and keyboard users can jump between them.
+function AgentStep({ n, title, children }: { n: number; title: string; children: ReactNode }) {
+  const id = `agent-step-${n}`
+  return (
+    <section className="agent-step" aria-labelledby={id}>
+      <h3 id={id}>
+        <span className="step-num" aria-hidden="true">
+          {n}
+        </span>
+        {title}
+      </h3>
+      <div className="step-body">{children}</div>
+    </section>
+  )
 }
-
-const WORKING_DAYS_PER_MONTH = 21
 
 export default function Employer() {
   const [orgInput, setOrgInput] = useState(() => (new URLSearchParams(window.location.search).get('org') ?? '').toUpperCase())
   const [org, setOrg] = useState(orgInput)
   const [includeSample, setIncludeSample] = useState(true)
+  const [extra, setExtra] = useState(0) // demo responses added so far
+  const [priority, setPriority] = useState<Priority>('headaches')
+  const [screenShare, setScreenShare] = useState(100)
+  const [agent, setAgent] = useState<AgentState | null>(null)
   const [data, setData] = useState<Reply | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [employees, setEmployees] = useState(1000)
-  const [minutes, setMinutes] = useState(10)
 
   // Load on change and refresh every 5 seconds, so a response shared on another screen shows up.
   useEffect(() => {
@@ -50,7 +57,7 @@ export default function Employer() {
     let alive = true
     const load = async () => {
       try {
-        const res = await fetch(`/api/aggregate?org=${encodeURIComponent(org)}&sample=${includeSample ? 1 : 0}`, { signal: AbortSignal.timeout(8000) })
+        const res = await fetch(`/api/aggregate?org=${encodeURIComponent(org)}&sample=${includeSample ? 1 : 0}&extra=${extra}`, { signal: AbortSignal.timeout(8000) })
         const body = await res.json().catch(() => null)
         if (!alive) return
         if (!res.ok) {
@@ -69,11 +76,30 @@ export default function Employer() {
       alive = false
       clearInterval(id)
     }
-  }, [org, includeSample])
+  }, [org, includeSample, extra])
 
   const shown = data && data.org === org.trim().toUpperCase() ? data : null
-  const affected = shown?.enough ? Math.round((employees * shown.lowShare) / 100) : 0
-  const hoursPerMonth = Math.round((affected * minutes * WORKING_DAYS_PER_MONTH) / 60)
+  // The agent recomputes whenever the numbers, the priority or a correction changes, and keeps its own history.
+  useEffect(() => {
+    if (!shown?.enough) {
+      setAgent(null)
+      return
+    }
+    const input = {
+      count: shown.count,
+      avgRate: shown.avgRate,
+      avgIncompletePct: shown.avgIncompletePct,
+      lowShare: shown.lowShare,
+      includesSample: shown.includesSample,
+      sampleCount: shown.sampleCount,
+      realIncluded: shown.realIncluded,
+      realCount: shown.realCount,
+      priority,
+      screenShare,
+    }
+    setAgent((prev) => (prev ? updateAgent(prev, input) : createAgent(input)))
+  }, [shown, priority, screenShare])
+
 
   return (
     <section className="hero result">
@@ -89,10 +115,24 @@ export default function Employer() {
             Show results
           </button>
         </div>
-        <label className="tick">
-          <input type="checkbox" checked={includeSample} onChange={(e) => setIncludeSample(e.target.checked)} />
-          Include sample data
-        </label>
+        <div className="share-row">
+          <label className="tick">
+            <input type="checkbox" checked={includeSample} onChange={(e) => setIncludeSample(e.target.checked)} />
+            Include sample data
+          </label>
+          <button
+            className="pill pill-secondary"
+            onClick={() => setExtra((n) => n + 3)}
+            disabled={!includeSample || (shown?.enough ? extra >= shown.sampleExtraMax : false)}
+          >
+            Add 3 sample responses
+          </button>
+          {extra > 0 && (
+            <button className="link" onClick={() => setExtra(0)}>
+              Reset
+            </button>
+          )}
+        </div>
       </div>
 
       {error && <p className="note">{error}</p>}
@@ -161,35 +201,108 @@ export default function Employer() {
             </figcaption>
           </div>
 
-          <div className="card card-forest">
-            <h3>Recommended action</h3>
-            <p className="summary-text">{recommend(shown.lowShare)}</p>
-          </div>
+          {agent && (
+            <section className="agent-panel" aria-labelledby="agent-title">
+              <div className="agent-top">
+                <FlameIllustration />
+                <div>
+                  <h2 id="agent-title">Team agent</h2>
+                  <p>Built for incident.io's Adaptable Agents track. Rules only, no AI model.</p>
+                </div>
+              </div>
 
-          <div className="card card-pale">
-            <h3>At your scale</h3>
-            <div className="share-row">
-              <label className="field">
-                Assumed employees
-                <input type="number" min={1} value={employees} onChange={(e) => setEmployees(Math.max(1, Number(e.target.value) || 1))} />
-              </label>
-              <label className="field">
-                Assumed minutes lost per person per day
-                <input type="number" min={0} value={minutes} onChange={(e) => setMinutes(Math.max(0, Number(e.target.value) || 0))} />
-              </label>
-            </div>
-          </div>
+              <AgentStep n={1} title="My call">
+                <p className="agent-call">{CALL_LABEL[agent.call]}</p>
+                <div
+                  className="meter"
+                  role="meter"
+                  aria-label="How sure I am"
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                  aria-valuenow={Math.round(agent.confidence * 100)}
+                  aria-valuetext={`${Math.round(agent.confidence * 100)} percent sure`}
+                >
+                  <div style={{ width: `${Math.round(agent.confidence * 100)}%` }} />
+                </div>
+                <p className="meter-text">{Math.round(agent.confidence * 100)}% sure</p>
+                <p className="agent-action">
+                  <strong>What I recommend:</strong> {agent.action}
+                </p>
+              </AgentStep>
 
-          <div className="result-grid">
-            <div className="card card-dark">
-              <h3>People in the low band</h3>
-              <div className="big">{affected.toLocaleString()}</div>
-            </div>
-            <div className="card card-aqua">
-              <h3>Hours a month at your assumptions</h3>
-              <div className="big">{hoursPerMonth.toLocaleString()}</div>
-            </div>
-          </div>
+              <AgentStep n={2} title="Why">
+                <div className="agent-cols">
+                  <div>
+                    <h4>Supports my call ({agent.evidenceFor.length})</h4>
+                    <ul className="plus">
+                      {agent.evidenceFor.map((t) => (
+                        <li key={t}>{t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                  <div>
+                    <h4>Argues against it ({agent.evidenceAgainst.length})</h4>
+                    <ul className="minus">
+                      {agent.evidenceAgainst.map((t) => (
+                        <li key={t}>{t}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </div>
+              </AgentStep>
+
+              <AgentStep n={3} title="What changed">
+                <div className="agent-change" aria-live="polite">
+                  {agent.change ? (
+                    <>
+                      <p className="agent-change-title">I changed my {agent.change.what === 'call' ? 'mind' : agent.change.what === 'action' ? 'advice' : 'confidence'}.</p>
+                      <p>
+                        <span>Before</span> {agent.change.before}
+                      </p>
+                      <p>
+                        <span>Now</span> {agent.change.now}
+                      </p>
+                      <p>
+                        <span>Why</span> {agent.change.why}
+                      </p>
+                    </>
+                  ) : (
+                    <p className="agent-change-title">Nothing yet. Add sample responses, change the priority or correct the roles, and I will show what moved.</p>
+                  )}
+                </div>
+                {agent.log.length > 1 && (
+                  <>
+                    <h4>Earlier</h4>
+                    <ol className="timeline">
+                      {agent.log.slice(1).map((e) => (
+                        <li key={e.id}>
+                          {e.change.before.replace(/\.$/, '')} to {e.change.now.replace(/\.$/, '')}. {e.change.why}
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                )}
+              </AgentStep>
+
+              <AgentStep n={4} title="Tell me what matters">
+                <fieldset className="segmented">
+                  <legend>Priority</legend>
+                  {(Object.keys(PRIORITY_LABEL) as Priority[]).map((p) => (
+                    <label key={p}>
+                      <input type="radio" name="priority" value={p} checked={priority === p} onChange={() => setPriority(p)} />
+                      <span>{PRIORITY_LABEL[p]}</span>
+                    </label>
+                  ))}
+                </fieldset>
+                <label className="field range">
+                  <span>
+                    Roles that are screen-based: <output>{screenShare}%</output>
+                  </span>
+                  <input type="range" min={0} max={100} step={5} value={screenShare} onChange={(e) => setScreenShare(Number(e.target.value))} />
+                </label>
+              </AgentStep>
+            </section>
+          )}
         </>
       )}
     </section>

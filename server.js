@@ -211,6 +211,29 @@ const SAMPLE_COHORT = [
   { blinksPerMinute: 21.5, incompletePct: 8, band: 'high' },
 ]
 
+// More INVENTED responses, added one batch at a time with ?extra=N so a demo can show the group changing as people
+// "arrive". Mostly low-band on purpose. Never stored, and always counted and labelled as sample data.
+const SAMPLE_EXTRA = [
+  { blinksPerMinute: 3.8, incompletePct: 44, band: 'low' },
+  { blinksPerMinute: 4.1, incompletePct: 40, band: 'low' },
+  { blinksPerMinute: 4.6, incompletePct: 37, band: 'low' },
+  { blinksPerMinute: 6.0, incompletePct: 29, band: 'typical' },
+  { blinksPerMinute: 3.4, incompletePct: 48, band: 'low' },
+  { blinksPerMinute: 4.9, incompletePct: 35, band: 'low' },
+  { blinksPerMinute: 7.1, incompletePct: 24, band: 'typical' },
+  { blinksPerMinute: 3.9, incompletePct: 42, band: 'low' },
+  { blinksPerMinute: 4.4, incompletePct: 39, band: 'low' },
+  { blinksPerMinute: 8.2, incompletePct: 21, band: 'typical' },
+  { blinksPerMinute: 3.7, incompletePct: 46, band: 'low' },
+  { blinksPerMinute: 4.7, incompletePct: 38, band: 'low' },
+  { blinksPerMinute: 9.4, incompletePct: 19, band: 'typical' },
+  { blinksPerMinute: 4.2, incompletePct: 41, band: 'low' },
+  { blinksPerMinute: 5.5, incompletePct: 27, band: 'typical' },
+  { blinksPerMinute: 3.6, incompletePct: 47, band: 'low' },
+  { blinksPerMinute: 11.0, incompletePct: 14, band: 'typical' },
+  { blinksPerMinute: 4.0, incompletePct: 43, band: 'low' },
+]
+
 function summarise(rows) {
   const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length
   const round1 = (v) => Math.round(v * 10) / 10
@@ -233,11 +256,13 @@ app.get('/api/aggregate', async (req, res) => {
   const org = typeof req.query.org === 'string' ? req.query.org.trim().toUpperCase() : ''
   if (!ORG_PATTERN.test(org)) return res.status(400).json({ error: 'Enter a company code of 2 to 32 letters or numbers' })
   const includeSample = req.query.sample !== '0'
+  const extra = Math.max(0, Math.min(SAMPLE_EXTRA.length, Number.parseInt(String(req.query.extra ?? '0'), 10) || 0))
+  const sampleRows = includeSample ? [...SAMPLE_COHORT, ...SAMPLE_EXTRA.slice(0, extra)] : []
 
   try {
     const real = (await readRecords()).filter((r) => r.org === org)
     const realIncluded = real.length >= MIN_GROUP
-    const rows = [...(realIncluded ? real : []), ...(includeSample ? SAMPLE_COHORT : [])]
+    const rows = [...(realIncluded ? real : []), ...sampleRows]
     if (rows.length < MIN_GROUP) return res.json({ org, enough: false, needed: MIN_GROUP })
     res.json({
       org,
@@ -245,7 +270,8 @@ app.get('/api/aggregate', async (req, res) => {
       includesSample: includeSample,
       realIncluded,
       realCount: realIncluded ? real.length : null,
-      sampleCount: includeSample ? SAMPLE_COHORT.length : 0,
+      sampleCount: sampleRows.length,
+      sampleExtraMax: SAMPLE_EXTRA.length,
       ...summarise(rows),
     })
   } catch (e) {
