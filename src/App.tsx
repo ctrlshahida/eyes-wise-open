@@ -4,12 +4,13 @@ import { useEyeTracker } from './useEyeTracker'
 import type { ErrorKind, MeasureResult, Snapshot } from './useEyeTracker'
 import { BlinkIllustration, OpticianIllustration, PrivacyIllustration } from './Illustrations'
 import { CALIBRATION_MS, CLOSED_RATIO, DEMO_MIN_FINISH_SEC, MEASURE_SEC, MIN_FINISH_SEC, PARTIAL_RATIO, SHORT_SESSION_SEC } from './blink'
-import type { Segment } from './blink'
 import { fetchSummary } from './summary'
 import { shareResult } from './share'
 import type { SummaryResult } from './summary'
-import { RELAXED_RANGE, SCREEN_RANGE, bandFor } from './reference'
-import type { Band, Range } from './reference'
+import { bandFor } from './reference'
+import type { Band } from './reference'
+import { ComparisonChart, SessionChart } from './charts'
+import Employer from './Employer'
 
 const ERROR_COPY: Record<ErrorKind, { title: string; body: string }> = {
   'camera-denied': {
@@ -212,107 +213,6 @@ function Check({
   )
 }
 
-// One horizontal bar: the person's rate against the two reference bands.
-function ComparisonChart({ rate }: { rate: number }) {
-  const max = Math.max(30, Math.ceil(rate / 10) * 10)
-  const at = (v: number) => `${(Math.min(v, max) / max) * 100}%`
-  const band = (r: Range) => ({ left: at(r.min), width: `${((r.max - r.min) / max) * 100}%` })
-  const ticks = Array.from({ length: max / 10 + 1 }, (_, i) => i * 10)
-
-  return (
-    <figure className="chart">
-      <div className="chart-track" role="img" aria-label={`Your rate is ${rate.toFixed(1)} blinks per minute. ${SCREEN_RANGE.label} is ${SCREEN_RANGE.min} to ${SCREEN_RANGE.max}. ${RELAXED_RANGE.label} is ${RELAXED_RANGE.min} to ${RELAXED_RANGE.max}.`}>
-        <div className="chart-band chart-screen" style={band(SCREEN_RANGE)} />
-        <div className="chart-band chart-relaxed" style={band(RELAXED_RANGE)} />
-        <div className="chart-marker" style={{ left: at(rate) }}>
-          <span>You: {rate.toFixed(1)}</span>
-        </div>
-      </div>
-      <div className="chart-axis" aria-hidden="true">
-        {ticks.map((t) => (
-          <span key={t} style={{ left: at(t) }}>
-            {t}
-          </span>
-        ))}
-      </div>
-      <figcaption>
-        <span className="legend">
-          <i className="chart-screen" />
-          {SCREEN_RANGE.label}: {SCREEN_RANGE.min} to {SCREEN_RANGE.max} ({SCREEN_RANGE.cite})
-        </span>
-        <span className="legend">
-          <i className="chart-relaxed" />
-          {RELAXED_RANGE.label}: {RELAXED_RANGE.min} to {RELAXED_RANGE.max} ({RELAXED_RANGE.cite})
-        </span>
-      </figcaption>
-    </figure>
-  )
-}
-
-function minutesLabel(sec: number) {
-  return sec < 3600 ? `${Math.round(sec / 60)} min` : `${(sec / 3600).toFixed(1)} h`
-}
-
-// Blink rate in each part of the session as bars, over the two reference bands.
-function SessionChart({ timeline }: { timeline: Segment[] }) {
-  const W = 480
-  const H = 220
-  const L = 30
-  const R = 8
-  const T = 12
-  const B = 30
-  const total = timeline[timeline.length - 1].endSec
-  const top = Math.max(20, Math.ceil(Math.max(...timeline.map((s) => s.rate)) / 5) * 5)
-  const x = (sec: number) => L + (sec / total) * (W - L - R)
-  const y = (v: number) => T + (1 - v / top) * (H - T - B)
-  const band = (r: Range, fill: string) => <rect x={L} width={W - L - R} y={y(r.max)} height={y(r.min) - y(r.max)} fill={fill} />
-  const yTicks = Array.from({ length: Math.floor(top / 10) + 1 }, (_, i) => i * 10)
-  const first = Math.round(timeline[0].rate)
-  const last = Math.round(timeline[timeline.length - 1].rate)
-
-  return (
-    <figure className="chart">
-      <svg
-        viewBox={`0 0 ${W} ${H}`}
-        className="session-chart"
-        role="img"
-        aria-label={`Blinks per minute across ${timeline.length} parts of the session, ${first} in the first part and ${last} in the last`}
-      >
-        {band(SCREEN_RANGE, '#a0e870')}
-        {band(RELAXED_RANGE, '#a0e1e1')}
-        {yTicks.map((t) => (
-          <g key={t}>
-            <line x1={L} x2={W - R} y1={y(t)} y2={y(t)} stroke="rgba(22,51,0,0.25)" />
-            <text x={L - 6} y={y(t) + 4} textAnchor="end" fontSize="13" fill="#163300">
-              {t}
-            </text>
-          </g>
-        ))}
-        {timeline.map((s) => {
-          const gap = 4
-          const bx = x(s.startSec) + gap
-          return <rect key={s.startSec} x={bx} width={Math.max(2, x(s.endSec) - x(s.startSec) - gap * 2)} y={y(s.rate)} height={y(0) - y(s.rate)} fill="#163300" />
-        })}
-        {[0, total / 2, total].map((sec, i) => (
-          <text key={sec} x={x(sec)} y={H - 8} textAnchor={i === 0 ? 'start' : i === 2 ? 'end' : 'middle'} fontSize="13" fill="#163300">
-            {sec === 0 ? '0' : minutesLabel(sec)}
-          </text>
-        ))}
-      </svg>
-      <figcaption>
-        <span className="legend">
-          <i className="chart-screen" />
-          {SCREEN_RANGE.label}: {SCREEN_RANGE.min} to {SCREEN_RANGE.max}
-        </span>
-        <span className="legend">
-          <i className="chart-relaxed" />
-          {RELAXED_RANGE.label}: {RELAXED_RANGE.min} to {RELAXED_RANGE.max}
-        </span>
-      </figcaption>
-    </figure>
-  )
-}
-
 const BAND_LABEL: Record<Band, string> = { low: 'Low', typical: 'Typical', high: 'High' }
 
 // Opt-in and off by default: nothing is sent until the button is pressed.
@@ -331,7 +231,12 @@ function ShareCard({ r }: { r: MeasureResult }) {
     <div className="card card-dark" aria-live="polite">
       <h3>Share with your company</h3>
       {state.status === 'done' ? (
-        <p>Shared. Thank you. Your name was never part of it.</p>
+        <>
+          <p>Shared. Thank you. Your name was never part of it.</p>
+          <a className="link" href={`/?view=employer&org=${encodeURIComponent(org.trim())}`}>
+            Open the employer view
+          </a>
+        </>
       ) : (
         <>
           <p>Optional. Sends your rate, partial-blink share and band with a company code. No name, no account, and it can't be taken back.</p>
@@ -414,7 +319,7 @@ function Result({ r, summary, onAgain, onBack }: { r: MeasureResult; summary: Su
             {summary && (
               <p className="fineprint">
                 {summary.source === 'gemini' ? 'Written by Gemini.' : `Template summary, not written by Gemini${summary.note ? `: ${summary.note}` : ''}.`} Not a
-                medical device, and it does not check your vision. Eye pain or changed sight: see an optician.
+                medical device, and it does not check your vision. Eye pain or changed sight? See an optician.
               </p>
             )}
           </div>
@@ -438,6 +343,9 @@ function Result({ r, summary, onAgain, onBack }: { r: MeasureResult; summary: Su
     </section>
   )
 }
+
+// ?view=employer opens the group results instead of the check.
+const EMPLOYER_VIEW = new URLSearchParams(window.location.search).get('view') === 'employer'
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -484,20 +392,27 @@ export default function App() {
     <>
       <header className="topbar">
         <img className="logo" src="/logo/logo-horizontal.svg" alt="Eyes Wise Open" />
-        <button className="pill pill-secondary" onClick={() => setDemo(!demo)} disabled={step === 'check'} aria-pressed={demo}>
-          Demo mode: {demo ? 'on' : 'off'}
-        </button>
+        {EMPLOYER_VIEW ? (
+          <a className="pill pill-secondary" href="/">
+            Take the check
+          </a>
+        ) : (
+          <button className="pill pill-secondary" onClick={() => setDemo(!demo)} disabled={step === 'check'} aria-pressed={demo}>
+            Demo mode: {demo ? 'on' : 'off'}
+          </button>
+        )}
       </header>
 
       <main>
-        {step === 'intro' && <Intro onStart={begin} />}
-        {step === 'check' &&
+        {EMPLOYER_VIEW && <Employer />}
+        {!EMPLOYER_VIEW && step === 'intro' && <Intro onStart={begin} />}
+        {!EMPLOYER_VIEW && step === 'check' &&
           (s.phase === 'error' && s.error ? (
             <ErrorScreen error={s.error} onRetry={start} onBack={home} />
           ) : (
             <Check s={s} videoRef={videoRef} onRecalibrate={recalibrate} onFinish={finishEarly} onStop={home} />
           ))}
-        {step === 'result' && result && <Result r={result} summary={summary} onAgain={begin} onBack={home} />}
+        {!EMPLOYER_VIEW && step === 'result' && result && <Result r={result} summary={summary} onAgain={begin} onBack={home} />}
       </main>
     </>
   )

@@ -190,6 +190,70 @@ app.post('/api/assessment', async (req, res) => {
   }
 })
 
+// ---- Employer view: group numbers only ----
+const MIN_GROUP = 5
+const ORG_PATTERN = /^[A-Z0-9_-]{2,32}$/
+
+// INVENTED sample responses so the employer view has something to show in a demo. They are not real people.
+// The view labels them "Sample data". One toggle (?sample=0) removes them.
+const SAMPLE_COHORT = [
+  { blinksPerMinute: 3.2, incompletePct: 45, band: 'low' },
+  { blinksPerMinute: 4.4, incompletePct: 41, band: 'low' },
+  { blinksPerMinute: 4.8, incompletePct: 36, band: 'low' },
+  { blinksPerMinute: 5.3, incompletePct: 30, band: 'typical' },
+  { blinksPerMinute: 5.9, incompletePct: 28, band: 'typical' },
+  { blinksPerMinute: 6.6, incompletePct: 33, band: 'typical' },
+  { blinksPerMinute: 7.4, incompletePct: 22, band: 'typical' },
+  { blinksPerMinute: 8.8, incompletePct: 25, band: 'typical' },
+  { blinksPerMinute: 10.2, incompletePct: 18, band: 'typical' },
+  { blinksPerMinute: 12.5, incompletePct: 15, band: 'typical' },
+  { blinksPerMinute: 16.0, incompletePct: 12, band: 'typical' },
+  { blinksPerMinute: 21.5, incompletePct: 8, band: 'high' },
+]
+
+function summarise(rows) {
+  const mean = (xs) => xs.reduce((a, b) => a + b, 0) / xs.length
+  const round1 = (v) => Math.round(v * 10) / 10
+  const incomplete = rows.map((r) => r.incompletePct).filter((v) => typeof v === 'number')
+  const bands = { low: 0, typical: 0, high: 0 }
+  for (const r of rows) bands[r.band]++
+  return {
+    count: rows.length,
+    avgRate: round1(mean(rows.map((r) => r.blinksPerMinute))),
+    avgIncompletePct: incomplete.length ? round1(mean(incomplete)) : null,
+    lowShare: round1((bands.low / rows.length) * 100),
+    bands,
+  }
+}
+
+// Aggregates only: never an individual record. Nothing is sent below MIN_GROUP rows. Real responses only join
+// the numbers once there are at least MIN_GROUP of them for this company code, because otherwise the known sample
+// data could be subtracted back out to reveal one person's result.
+app.get('/api/aggregate', async (req, res) => {
+  const org = typeof req.query.org === 'string' ? req.query.org.trim().toUpperCase() : ''
+  if (!ORG_PATTERN.test(org)) return res.status(400).json({ error: 'Enter a company code of 2 to 32 letters or numbers' })
+  const includeSample = req.query.sample !== '0'
+
+  try {
+    const real = (await readRecords()).filter((r) => r.org === org)
+    const realIncluded = real.length >= MIN_GROUP
+    const rows = [...(realIncluded ? real : []), ...(includeSample ? SAMPLE_COHORT : [])]
+    if (rows.length < MIN_GROUP) return res.json({ org, enough: false, needed: MIN_GROUP })
+    res.json({
+      org,
+      enough: true,
+      includesSample: includeSample,
+      realIncluded,
+      realCount: realIncluded ? real.length : null,
+      sampleCount: includeSample ? SAMPLE_COHORT.length : 0,
+      ...summarise(rows),
+    })
+  } catch (e) {
+    console.error('Could not read assessments', e)
+    res.status(500).json({ error: 'Could not read the results' })
+  }
+})
+
 // Bad JSON and other request errors: a short JSON message, never a stack trace.
 app.use('/api', (err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.status === 400 ? 'Invalid request body' : 'Server error' })

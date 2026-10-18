@@ -365,6 +365,48 @@ main {
   align-content: start;
 }
 
+.stat-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.bandbar {
+  display: flex;
+  height: 36px;
+  background: rgba(22, 51, 0, 0.15);
+}
+
+.bandkey {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  font-size: 1rem;
+}
+
+.tick {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.tick input {
+  width: 22px;
+  height: 22px;
+  accent-color: var(--forest);
+}
+
+a.pill {
+  text-decoration: none;
+  display: inline-block;
+}
+
+.card-pale .summary-text,
+.summary-text.dark-text {
+  color: var(--forest);
+}
+
 .summary-text {
   font-size: 1.4rem;
   line-height: 1.3;
@@ -381,8 +423,8 @@ main {
 }
 
 .fineprint {
-  font-size: 0.9rem;
-  opacity: 0.75;
+  font-size: 1.05rem;
+  opacity: 0.9;
 }
 
 .share-row {
@@ -661,16 +703,25 @@ main {
   .result-grid {
     grid-template-columns: 1fr 1fr;
   }
+
+  .stat-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
 }
 
-/* Short desktop screens (laptops): drop the drawings so the whole intro fits without scrolling. */
+/* Short desktop screens (laptops): shrink the drawings so the intro still fits, or nearly fits, without scrolling. */
 @media (min-width: 880px) and (max-height: 900px) {
   h1 {
     font-size: clamp(3.4rem, min(17vw, 12vh), 9rem);
   }
 
   .card-art {
-    display: none;
+    padding: 4px 8px;
+    margin-bottom: 4px;
+  }
+
+  .card-art .illo {
+    max-height: clamp(48px, 9vh, 80px);
   }
 }
 
