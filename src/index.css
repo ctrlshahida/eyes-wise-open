@@ -709,22 +709,6 @@ a.pill {
   }
 }
 
-/* Short desktop screens (laptops): shrink the drawings so the intro still fits, or nearly fits, without scrolling. */
-@media (min-width: 880px) and (max-height: 900px) {
-  h1 {
-    font-size: clamp(3.4rem, min(17vw, 12vh), 9rem);
-  }
-
-  .card-art {
-    padding: 4px 8px;
-    margin-bottom: 4px;
-  }
-
-  .card-art .illo {
-    max-height: clamp(48px, 9vh, 80px);
-  }
-}
-
 /* On the near-black card the pale secondary button looks greyed out, so use solid lime there. */
 .card-dark .pill-secondary {
   background: var(--lime);

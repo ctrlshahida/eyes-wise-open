@@ -1,0 +1,28 @@
+name: Deploy
+
+# Every push to main updates the Vultr server: pull, install, build, restart.
+# Needs three repository secrets (Settings > Secrets and variables > Actions):
+#   VPS_HOST         the server address, 209.250.226.234
+#   VPS_SSH_KEY      the private half of a deploy key whose public half is in the server's authorized_keys
+#   VPS_KNOWN_HOSTS  the output of: ssh-keyscan -t ed25519 209.250.226.234
+on:
+  push:
+    branches: [main]
+
+concurrency: deploy
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update the server
+        env:
+          HOST: ${{ secrets.VPS_HOST }}
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key root@"$HOST" "cd /opt/app && git pull && npm install && npm run build && pm2 restart app"
