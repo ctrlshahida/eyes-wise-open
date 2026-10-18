@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { FormEvent, ReactNode } from 'react'
 import { ComparisonChart } from './charts'
-import { FlameIllustration } from './Illustrations'
 import { CALL_LABEL, PRIORITY_LABEL, createAgent, updateAgent } from './cohortAgent'
 import type { AgentState, Priority } from './cohortAgent'
 
@@ -78,6 +77,11 @@ export default function Employer() {
     }
   }, [org, includeSample, extra])
 
+  const submit = (e: FormEvent) => {
+    e.preventDefault()
+    setOrg(orgInput.trim())
+  }
+
   const shown = data && data.org === org.trim().toUpperCase() ? data : null
   // The agent recomputes whenever the numbers, the priority or a correction changes, and keeps its own history.
   useEffect(() => {
@@ -106,15 +110,15 @@ export default function Employer() {
       <h1>Team results.</h1>
 
       <div className="card card-pale">
-        <div className="share-row">
+        <form className="share-row" onSubmit={submit}>
           <label className="field">
             Company code
             <input value={orgInput} onChange={(e) => setOrgInput(e.target.value.toUpperCase())} maxLength={32} autoComplete="off" spellCheck={false} />
           </label>
-          <button className="pill pill-primary" onClick={() => setOrg(orgInput.trim())} disabled={orgInput.trim().length < 2}>
+          <button className="pill pill-primary" type="submit" disabled={orgInput.trim().length < 2}>
             Show results
           </button>
-        </div>
+        </form>
         <div className="share-row">
           <label className="tick">
             <input type="checkbox" checked={includeSample} onChange={(e) => setIncludeSample(e.target.checked)} />
@@ -136,7 +140,7 @@ export default function Employer() {
       </div>
 
       {error && <p className="note">{error}</p>}
-      {org.trim().length < 2 && <p className="note">Enter a company code to see its results.</p>}
+      {org.trim().length < 2 && <p className="note">Enter your company code to see your team's results.</p>}
 
       {shown && !shown.enough && (
         <div className="card card-aqua">
@@ -204,11 +208,8 @@ export default function Employer() {
           {agent && (
             <section className="agent-panel" aria-labelledby="agent-title">
               <div className="agent-top">
-                <FlameIllustration />
-                <div>
-                  <h2 id="agent-title">Team agent</h2>
-                  <p>Built for incident.io's Adaptable Agents track. Rules only, no AI model.</p>
-                </div>
+                <h2 id="agent-title">Team agent</h2>
+                <p>It updates its call as responses come in and when you change what matters. Rules only, no AI model.</p>
               </div>
 
               <AgentStep n={1} title="My call">

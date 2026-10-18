@@ -327,6 +327,12 @@ app.use('/api', (err, _req, res, _next) => {
   res.status(err.status || 500).json({ error: err.status === 400 ? 'Invalid request body' : 'Server error' })
 })
 
+// The manager view lives at /manager. Keep it out of search engines; it is not linked from the employee pages.
+app.get('/manager', (_req, res, next) => {
+  res.set('X-Robots-Tag', 'noindex, nofollow')
+  next()
+})
+
 app.use(express.static(dist))
 
 // Fallback to index.html for anything that is not an API route or a static file

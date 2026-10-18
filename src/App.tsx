@@ -287,9 +287,6 @@ function ShareCard({ r }: { r: MeasureResult }) {
       {state.status === 'done' ? (
         <>
           <p>Shared. Thank you. Your name was never part of it.</p>
-          <a className="link" href={`/?view=employer&org=${encodeURIComponent(org.trim())}`}>
-            Open the employer view
-          </a>
         </>
       ) : (
         <>
@@ -310,18 +307,44 @@ function ShareCard({ r }: { r: MeasureResult }) {
   )
 }
 
+// A button that asks Gemini to explain a chart. Nothing is sent until it is pressed. The not-medical-advice line
+// comes from the app, so it is always there whatever Gemini writes.
+function GeminiExplain({ label, sends, ask }: { label: string; sends: string; ask: () => Promise<SummaryResult> }) {
+  const [explain, setExplain] = useState<SummaryResult | 'loading' | null>(null)
+  if (explain === null) {
+    return (
+      <div className="trend-explain">
+        <button
+          className="pill pill-primary"
+          onClick={async () => {
+            setExplain('loading')
+            setExplain(await ask())
+          }}
+        >
+          {label}
+        </button>
+        <p className="fineprint">{sends}</p>
+      </div>
+    )
+  }
+  if (explain === 'loading') return <p>Reading your graph…</p>
+  return (
+    <div className="trend-explain">
+      <p className="summary-text">{explain.text}</p>
+      <p className="callout">Not medical advice. Eye pain or changes in your sight? See an optician.</p>
+      <p className="fineprint">
+        {explain.source === 'gemini' ? 'Written by Gemini from the numbers above.' : `Template text, not written by Gemini${explain.note ? `: ${explain.note}` : ''}.`}
+      </p>
+    </div>
+  )
+}
+
 // The last few checks from this browser's own storage. Nothing here is sent anywhere.
 function TrendCard() {
   const [checks, setChecks] = useState(() => loadHistory().slice(-TREND_SIZE))
-  const [explain, setExplain] = useState<SummaryResult | 'loading' | null>(null)
   const clear = () => {
     clearHistory()
     setChecks([])
-    setExplain(null)
-  }
-  const askGemini = async () => {
-    setExplain('loading')
-    setExplain(await fetchTrendSummary(checks))
   }
 
   return (
@@ -330,24 +353,12 @@ function TrendCard() {
       {checks.length >= 2 ? (
         <>
           <TrendChart checks={checks} />
-          {explain === null ? (
-            <div className="trend-explain">
-              <button className="pill pill-primary" onClick={askGemini}>
-                Explain my trend
-              </button>
-              <p className="fineprint">Sends only these {checks.length} blink rates, without dates, to Gemini.</p>
-            </div>
-          ) : explain === 'loading' ? (
-            <p>Reading your trend…</p>
-          ) : (
-            <div className="trend-explain">
-              <p className="summary-text">{explain.text}</p>
-              <p className="callout">Not medical advice. Eye pain or changes in your sight? See an optician.</p>
-              <p className="fineprint">
-                {explain.source === 'gemini' ? 'Written by Gemini from the blink rates above.' : `Template text, not written by Gemini${explain.note ? `: ${explain.note}` : ''}.`}
-              </p>
-            </div>
-          )}
+          <GeminiExplain
+            key={checks.length}
+            label="Explain my trend"
+            sends={`Sends only these ${checks.length} blink rates, without dates, to Gemini.`}
+            ask={() => fetchTrendSummary(checks)}
+          />
         </>
       ) : (
         <p>
@@ -459,8 +470,9 @@ function Result({ r, summary, onAgain, onBack }: { r: MeasureResult; summary: Su
   )
 }
 
-// ?view=employer opens the group results instead of the check.
-const EMPLOYER_VIEW = new URLSearchParams(window.location.search).get('view') === 'employer'
+// The manager view has its own address, /manager (with or without a trailing slash). It is not linked from the
+// employee pages. It is not locked: it only ever shows group numbers, and nothing until 5 people have shared.
+const EMPLOYER_VIEW = /^\/manager\/?$/.test(window.location.pathname)
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement>(null)

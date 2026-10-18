@@ -8,7 +8,6 @@ const FOREST = '#163300'
 const LIME = '#A0E870'
 const AQUA = '#A0E1E1'
 const RED = '#7F1D2A'
-const ORANGE = '#F25533' // approximates incident.io's orange, used only on the agent drawing
 
 function Frame({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -90,27 +89,6 @@ export function OpticianIllustration() {
       <path d="M20,268 H460" strokeWidth="5" fill="none" />
       <path d="M210,256 V268 M270,256 V268" strokeWidth="5" fill="none" />
     </Frame>
-  )
-}
-
-// The team agent's flame: two layers that flicker slowly, with embers that rise and fade. Drawn from scratch.
-export function FlameIllustration() {
-  return (
-    <svg viewBox="0 0 160 170" className="flame" aria-hidden="true" focusable="false">
-      <circle className="ember ember-1" cx="26" cy="52" r="4" fill={ORANGE} />
-      <circle className="ember ember-2" cx="138" cy="62" r="3.5" fill={ORANGE} />
-      <circle className="ember ember-3" cx="80" cy="26" r="3" fill="#ffb199" />
-      <path
-        className="flame-outer"
-        d="M80,10 C88,42 142,62 142,110 C142,146 116,166 80,166 C44,166 18,146 18,110 C18,84 36,70 50,52 C54,66 62,72 70,66 C80,58 76,34 80,10 Z"
-        fill={ORANGE}
-      />
-      <path
-        className="flame-inner"
-        d="M80,88 C86,106 116,114 116,136 C116,154 100,162 80,162 C60,162 44,154 44,136 C44,116 66,108 72,96 C76,104 80,102 80,88 Z"
-        fill="#ffb199"
-      />
-    </svg>
   )
 }
 
