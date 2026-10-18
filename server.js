@@ -109,10 +109,49 @@ function extractText(data) {
   return data?.candidates?.[0]?.content?.parts?.find((p) => p.text)?.text ?? null
 }
 
-app.post('/api/summary', async (req, res) => {
+// Ask Gemini for a short text and send it back as { text, model }, or a short error. Used by every Gemini route.
+async function askGemini(res, instruction, input) {
   const key = process.env.GEMINI_API_KEY
   if (!key) return res.status(503).json({ error: 'Gemini is not configured on the server' })
+  try {
+    const body = JSON.stringify({
+      model: GEMINI_MODEL,
+      system_instruction: instruction,
+      input,
+      generation_config: { max_output_tokens: 400, thinking_level: GEMINI_THINKING },
+      store: false,
+    })
+    const call = () =>
+      fetch(GEMINI_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
+        body,
+        signal: AbortSignal.timeout(10_000),
+      })
+    let r = await call()
+    // Gemini answered 403 "caller does not have permission" on roughly 1 call in 4 in testing, on both endpoints,
+    // and the same call worked a moment later. Retry a few times before giving up. Not on 429 (rate limit): Google
+    // asks for a wait of about 25s, and quick retries only use up more of the free tier's 15 requests a minute.
+    for (let attempt = 2; attempt <= 4 && [403, 500, 502, 503].includes(r.status); attempt++) {
+      console.warn('Gemini returned', r.status, `retrying (attempt ${attempt} of 4)`)
+      await new Promise((done) => setTimeout(done, 800))
+      r = await call()
+    }
+    const data = await r.json().catch(() => null)
+    if (!r.ok) {
+      console.error('Gemini error', r.status, (Array.isArray(data) ? data[0] : data)?.error?.message ?? data)
+      return res.status(502).json({ error: `Gemini returned ${r.status}` })
+    }
+    const text = extractText(data)?.trim()
+    if (!text) return res.status(502).json({ error: 'Gemini returned no text' })
+    res.json({ text, model: GEMINI_MODEL })
+  } catch (e) {
+    console.error('Gemini request failed', e)
+    res.status(502).json({ error: e?.name === 'TimeoutError' ? 'Gemini timed out' : 'Could not reach Gemini' })
+  }
+}
 
+app.post('/api/summary', async (req, res) => {
   const b = req.body ?? {}
   const range = (v) => (Array.isArray(v) && num(v[0], 0, 200) !== null && num(v[1], 0, 200) !== null ? [num(v[0], 0, 200), num(v[1], 0, 200)] : null)
   const screen = range(b.screenRange)
@@ -130,41 +169,44 @@ app.post('/api/summary', async (req, res) => {
     trend: trendText(b.trend),
   }
 
-  try {
-    const body = JSON.stringify({
-      model: GEMINI_MODEL,
-      system_instruction: SUMMARY_INSTRUCTION,
-      input: `Session numbers: ${JSON.stringify(stats)}`,
-      generation_config: { max_output_tokens: 400, thinking_level: GEMINI_THINKING },
-      store: false,
-    })
-    const call = () =>
-      fetch(GEMINI_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'x-goog-api-key': key },
-        body,
-        signal: AbortSignal.timeout(10_000),
-      })
-    let r = await call()
-    // Gemini answered 403 "caller does not have permission" on roughly 1 call in 4 in testing, on both endpoints,
-    // and the same call worked a moment later. Retry a few times before giving up.
-    for (let attempt = 2; attempt <= 4 && [403, 429, 500, 502, 503].includes(r.status); attempt++) {
-      console.warn('Gemini returned', r.status, `retrying (attempt ${attempt} of 4)`)
-      await new Promise((done) => setTimeout(done, 800))
-      r = await call()
-    }
-    const data = await r.json().catch(() => null)
-    if (!r.ok) {
-      console.error('Gemini error', r.status, (Array.isArray(data) ? data[0] : data)?.error?.message ?? data)
-      return res.status(502).json({ error: `Gemini returned ${r.status}` })
-    }
-    const text = extractText(data)?.trim()
-    if (!text) return res.status(502).json({ error: 'Gemini returned no text' })
-    res.json({ text, model: GEMINI_MODEL })
-  } catch (e) {
-    console.error('Gemini request failed', e)
-    res.status(502).json({ error: e?.name === 'TimeoutError' ? 'Gemini timed out' : 'Could not reach Gemini' })
-  }
+  await askGemini(res, SUMMARY_INSTRUCTION, `Session numbers: ${JSON.stringify(stats)}`)
+})
+
+// ---- Trend: the person's last few checks, sent only when they press "Explain my trend" ----
+
+const TREND_INSTRUCTION = `You help an office worker read a chart of their own last few blink-rate checks, taken while working at a screen.
+You get three facts. Write exactly 2 short sentences, under 35 words in total, plain English, no markdown, numbers as digits.
+Sentence 1 (under 22 words): the change, then where the latest check sits, using the wording of the facts. Do not guess why it changed.
+Sentence 2 (under 14 words): if the facts say some checks were rough, say they make the trend only a rough guide. Otherwise one practical tip, such as looking away from the screen and blinking fully.
+This is not a medical device: never diagnose, never name a condition, never give medical advice, never mention statistics or studies. Do not add a disclaimer, the app shows one separately.`
+
+// How the rate moved from the first to the last check, worked out here so the model does not have to.
+function directionText(first, last, count) {
+  const a = Math.round(first)
+  const b = Math.round(last)
+  if (Math.abs(last - first) < Math.max(1, first * 0.15)) return `stayed about the same over the last ${count} checks (${a} then ${b} blinks a minute)`
+  return `${last < first ? 'went down' : 'went up'} from ${a} to ${b} blinks a minute over the last ${count} checks`
+}
+
+app.post('/api/trend', async (req, res) => {
+  const b = req.body ?? {}
+  // Up to 5 checks, oldest first: blink rate and whether it was a rough check. No dates, nothing else.
+  const checks = (Array.isArray(b.checks) ? b.checks : [])
+    .slice(-5)
+    .map((c) => ({ rate: num(c?.blinksPerMinute, 0, 200), rough: c?.rough === true }))
+    .filter((c) => c.rate !== null)
+  if (checks.length < 2) return res.status(400).json({ error: 'At least 2 checks are needed' })
+  const range = (v) => (Array.isArray(v) && num(v[0], 0, 200) !== null && num(v[1], 0, 200) !== null ? [num(v[0], 0, 200), num(v[1], 0, 200)] : null)
+  const latest = checks[checks.length - 1].rate
+  const where = position(latest, range(b.screenRange), range(b.relaxedRange))
+  const rough = checks.filter((c) => c.rough).length
+  // Plain sentences rather than named fields, so the model cannot echo field names back.
+  const facts = [
+    `The blink rate ${directionText(checks[0].rate, latest, checks.length)}.`,
+    where ? `The latest check is ${where}.` : null,
+    rough > 0 ? `${rough} of the ${checks.length} checks were rough (short, demo mode or poor light).` : 'None of the checks were rough.',
+  ]
+  await askGemini(res, TREND_INSTRUCTION, facts.filter(Boolean).join(' '))
 })
 
 // One anonymous record: company code, time (set here), blinks per minute, share of partial blinks, band.

@@ -6,6 +6,7 @@ import type { Segment } from './blink'
 import {
   BlinkDetector,
   CALIBRATION_MS,
+  DEMO_REMINDER_WINDOW_SEC,
   LOW_LIGHT_BRIGHTNESS,
   LOW_LIGHT_SHARE,
   MIN_BASELINE,
@@ -45,7 +46,9 @@ export interface Snapshot {
   measureElapsedSec: number // time measured so far, counts only time with a face in view
   canFinish: boolean // enough has been measured to finish early
   finishInSec: number // seconds of measuring still needed before Finish unlocks
-  hidden: boolean // the tab is hidden, so the browser is not giving us camera frames
+  hidden: boolean // the tab is hidden and this browser stops camera frames for hidden tabs
+  background: boolean // frames come straight from the camera, so counting carries on in a hidden tab
+  liveRate: number | null // blinks per minute over the last DEMO_REMINDER_WINDOW_SEC of measuring, null until there is that much
 }
 
 const EMPTY: Snapshot = {
@@ -63,7 +66,15 @@ const EMPTY: Snapshot = {
   canFinish: false,
   finishInSec: 0,
   hidden: false,
+  background: false,
+  liveRate: null,
 }
+
+// Chrome and Edge can read camera frames straight from the track. Unlike requestAnimationFrame, this keeps
+// running when the tab is hidden, so the measurement carries on while the person uses other tabs.
+// Not in TypeScript's DOM types yet, so the small part used here is declared.
+type TrackProcessor = new (init: { track: MediaStreamTrack }) => { readable: ReadableStream<VideoFrame> }
+const TrackProcessor = (window as unknown as { MediaStreamTrackProcessor?: TrackProcessor }).MediaStreamTrackProcessor
 
 interface Measurement {
   seconds: number // safety cap
@@ -88,6 +99,8 @@ function createEngine() {
     landmarker: null as FaceLandmarker | null,
     raf: 0,
     lastVideoTime: -1,
+    reader: null as ReadableStreamDefaultReader<VideoFrame> | null,
+    background: false,
     detector: new BlinkDetector(),
     calStart: null as number | null,
     calSamples: [] as number[],
@@ -159,13 +172,21 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>) {
       measureElapsedSec: ms ? Math.floor(ms.faceSec) : 0,
       canFinish: ms !== null && ms.faceSec >= ms.minFinishSec,
       finishInSec: ms ? Math.max(0, Math.ceil(ms.minFinishSec - ms.faceSec)) : 0,
-      hidden: document.hidden,
+      hidden: document.hidden && !m.background,
+      background: m.background,
+      liveRate:
+        ms && ms.faceSec >= DEMO_REMINDER_WINDOW_SEC
+          ? (ms.blinkTimes.filter((t) => t > ms.faceSec - DEMO_REMINDER_WINDOW_SEC).length * 60) / DEMO_REMINDER_WINDOW_SEC
+          : null,
     })
   }, [m])
 
   // Closing the camera also abandons any measurement in progress (its promise resolves to null).
   const teardown = useCallback(() => {
     cancelAnimationFrame(m.raf)
+    m.reader?.cancel().catch(() => {})
+    m.reader = null
+    m.background = false
     m.stream?.getTracks().forEach((t) => t.stop())
     m.stream = null
     m.landmarker?.close()
@@ -208,13 +229,13 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>) {
     m.phase = 'tracking'
   }
 
-  const sampleBrightness = (video: HTMLVideoElement, now: number) => {
+  const sampleBrightness = (source: CanvasImageSource, now: number) => {
     if (now - m.lastBrightT < 500) return
     m.lastBrightT = now
     m.canvas ??= Object.assign(document.createElement('canvas'), { width: 32, height: 24 })
     const ctx = m.canvas.getContext('2d', { willReadFrequently: true })
     if (!ctx) return
-    ctx.drawImage(video, 0, 0, 32, 24)
+    ctx.drawImage(source, 0, 0, 32, 24)
     const px = ctx.getImageData(0, 0, 32, 24).data
     let sum = 0
     for (let i = 0; i < px.length; i += 4) sum += 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]
@@ -243,13 +264,13 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>) {
     m.faceLostSince ??= now
   }
 
-  const onFace = (now: number, video: HTMLVideoElement, lm: NormalizedLandmark[], shapes: Classifications | undefined) => {
+  const onFace = (now: number, width: number, height: number, lm: NormalizedLandmark[], shapes: Classifications | undefined) => {
     m.faceLostSince = null
     // Time with no face is not counted: the measurement clock only runs while the face is in view.
     const dt = m.lastFaceT !== null && now - m.lastFaceT < 1500 ? (now - m.lastFaceT) / 1000 : 0
     m.lastFaceT = now
 
-    const ear = averageEar(lm, video.videoWidth, video.videoHeight)
+    const ear = averageEar(lm, width, height)
     m.ear = ear
     m.faceVisible = true
 
@@ -336,24 +357,70 @@ export function useEyeTracker(videoRef: RefObject<HTMLVideoElement | null>) {
     m.phase = 'calibrating'
     publish()
 
+    // One camera frame through the model. Throws if the model fails.
+    const runFrame = (source: HTMLVideoElement | VideoFrame, width: number, height: number) => {
+      const now = performance.now()
+      sampleBrightness(source, now)
+      const result = landmarker.detectForVideo(source, now)
+      const lm = result.faceLandmarks[0]
+      if (lm) onFace(now, width, height, lm, result.faceBlendshapes?.[0])
+      else onNoFace(now)
+    }
+
+    // Fallback (Firefox, Safari): frames from the video element, once per screen refresh. Pauses in hidden tabs.
     const tick = () => {
       m.raf = requestAnimationFrame(tick)
       if (video.readyState < 2 || video.currentTime === m.lastVideoTime) return
       m.lastVideoTime = video.currentTime
-      const now = performance.now()
-      sampleBrightness(video, now)
-      let result
       try {
-        result = landmarker.detectForVideo(video, now)
+        runFrame(video, video.videoWidth, video.videoHeight)
       } catch (e) {
         fail('model-failed', e instanceof Error ? e.message : String(e))
-        return
       }
-      const lm = result.faceLandmarks[0]
-      if (lm) onFace(now, video, lm, result.faceBlendshapes?.[0])
-      else onNoFace(now)
     }
-    tick()
+
+    if (!TrackProcessor) {
+      tick()
+      return
+    }
+
+    // Chrome, Edge: read frames straight from the camera track, which keeps going in a hidden tab.
+    const reader = new TrackProcessor({ track: stream.getVideoTracks()[0] }).readable.getReader()
+    m.reader = reader
+    m.background = true
+    const pump = async () => {
+      let processed = 0
+      while (id === m.session) {
+        let next: ReadableStreamReadResult<VideoFrame>
+        try {
+          next = await reader.read()
+        } catch {
+          break // cancelled by stop or teardown
+        }
+        if (next.done) break
+        const frame = next.value
+        try {
+          if (id === m.session) runFrame(frame, frame.displayWidth, frame.displayHeight)
+          processed++
+        } catch (e) {
+          if (id !== m.session) break
+          if (processed === 0) {
+            // The model would not take a camera frame directly: use the video element instead.
+            console.warn('Direct camera frames failed, falling back to the video element', e)
+            reader.cancel().catch(() => {})
+            m.reader = null
+            m.background = false
+            tick()
+          } else {
+            fail('model-failed', e instanceof Error ? e.message : String(e))
+          }
+          break
+        } finally {
+          frame.close()
+        }
+      }
+    }
+    void pump()
   }, [m, teardown, publish, fail, videoRef])
 
   const stop = useCallback(() => {

@@ -3,13 +3,16 @@
 This file is kept up to date after every task. The log at the bottom records each request, the files changed, what Claude generated and what was and was not checked.
 
 ## Tools used while building
-- Claude Code (Claude Sonnet 5.5): wrote the code, ran builds and checks, searched the web for the reference sources, and wrote this file.
+- Claude Code (Claude Sonnet 5.5 and Claude Opus 5.5, used in different sessions by different team members): wrote the code, ran builds and checks, searched the web for the reference sources and the current Gemini model name, and wrote this file.
 - Google AI Studio: used only to create the Gemini API key. It wrote nothing.
 
 ## AI inside the product (at runtime)
 - MediaPipe FaceLandmarker: a pretrained face-landmark model. It runs in the browser. Video is never recorded or uploaded.
-- Gemini API (`gemini-3.5-flash-lite`): writes the short summary on the result screen. It receives only anonymous numbers: blink rate, partial-blink share, time measured, band, the two reference ranges and the change between the first and second half of the session. It does not choose the numbers, the band or any recommendation. If Gemini fails, a template summary is shown and the page says which one wrote the text.
+- Gemini API (`gemini-3.5-flash-lite`), used in two places. Each is labelled in the page as written by Gemini or by a template, with the reason when the template was used:
+  - **Result summary:** writes the short summary on the result screen. It receives only anonymous numbers: blink rate, partial-blink share, time measured, band, the two reference ranges and the change between the first and second half of the session. It does not choose the numbers, the band or any recommendation.
+  - **Trend explanation (opt-in):** only when the person presses "Explain my trend", it writes 2 short sentences about their last few checks. It receives only those blink rates (oldest first) and which checks were rough. It gets no dates. The direction of the change and where the latest check sits are worked out by our code and handed to Gemini as plain sentences. The "Not medical advice" line under the reply comes from the app, not from Gemini.
 - Cohort agent (employer view, `src/cohortAgent.ts`): plain rule-based TypeScript. No language model is involved. Its thresholds and wording were chosen by Claude.
+- Demo-mode blink reminder: plain rule-based TypeScript (live rate over the last 20 seconds below 5 a minute). No language model is involved.
 - Not built: the measurement agent, ElevenLabs voice, Presage vitals.
 
 ## What AI wrote vs what we wrote
@@ -17,7 +20,8 @@ This file is kept up to date after every task. The log at the bottom records eac
 |---|---|
 | Concept, name, pitch, PROJECT.md spec | The team |
 | All source code (blink engine, check flow, result screen, server, employer view, cohort agent) | Claude, from the spec; the user directed changes and tested in the browser |
-| Logo, card drawings, chart code | Designed and coded by Claude |
+| Logo, card drawings, chart code (including the trend chart) | Designed and coded by Claude |
+| Trend graph, local history, "Explain my trend", demo-mode blink reminder, counting in hidden tabs | Coded by Claude at the user's request; the reminder was agreed by the team |
 | Reference-range sources in `src/reference.ts` | Found by Claude through web search. The AAO page was read in full; the papers were seen as abstracts and secondary reports |
 | Sample responses (12 plus 18 demo extras) | Invented by Claude. Always labelled "Sample data" in the UI |
 | Deployment (Vultr, Caddy, pm2, GitHub Action) | Steps and workflow file by Claude; run by the user |
@@ -26,7 +30,11 @@ This file is kept up to date after every task. The log at the bottom records eac
 - Blink detection thresholds are first guesses. They have not been tuned or validated, and Claude has never run the app with a real camera.
 - These cut-offs are Claude's choices, not from a source: the low, typical and high bands (below 5, above 20 a minute), the employer low-share lines (20% and 40%) and their 2-point dead band, "short session" (under 2 minutes) and the agent's confidence formula.
 - The reference ranges: the American Academy of Ophthalmology quotes 15 a minute at rest and 5 to 7 on screen. Controlled studies found about 10 and about 15 on screen, so published values vary. Details are in `src/reference.ts`.
-- Gemini does not keep to the word limit in the prompt, and Google returned intermittent 403 errors that the server retries. The template fallback covers the rest.
+- Gemini does not always keep to the word limit in the prompt, and Google returned intermittent 403 errors that the server retries. The template fallback covers the rest.
+- The Gemini key is on the free tier: 15 requests a minute for this model. Rapid testing hit that limit (429). The server does not retry a 429, because quick retries only use up more of the quota. The page then shows the labelled template.
+- Trend history is kept only in the browser's own storage (localStorage) on that device. It is not sent to the server or the company, and it is lost if the browser data is cleared. The trend explanation sends those rates to Gemini only when the person presses the button.
+- Counting carries on in a hidden tab only in Chrome and Edge, which can read camera frames directly. Firefox and Safari still pause when the tab is hidden, and the page says so. Tested with Chrome's fake camera, not a real one.
+- Demo-mode reminder settings are Claude's choices, not from a source: the 20 second window, the 30 second quiet period after "Got it", and using the bottom of the screen range (5 a minute) as the trigger.
 - The employer view is anonymous but has no login, and nothing stops one person sharing twice.
 - Not a medical device. It does not diagnose, and a low reading only says the person might talk to an optician.
 
@@ -643,3 +651,89 @@ This file is kept up to date after every task. The log at the bottom records eac
 - The rest of the app (intro, check and result screens) was not audited for accessibility in this pass.
 
 **Checked by the AI:** `npm run build` completes. The employer page was rendered at 1366px wide after a temporary hook (removed afterwards) added sample responses and changed the priority, and looked at: all four sections, the meter, the timeline and the ticked priority show. The 500px render was not looked at. Keyboard use and a screen reader were not tried. A doubled full stop in the Earlier list was fixed after the screenshot and not re-rendered.
+
+### 2026-10-18: "Show trend": last 5 checks from this browser's own storage
+**Asked:** A trend graph of the last 5 sessions, using data stored locally, with a "Show trend" button.
+
+**Files created or changed:** `src/history.ts` (new), `src/charts.tsx`, `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What was done (AI-generated by Claude):**
+- `src/history.ts`: each finished check with at least one blink is saved to `localStorage` in this browser only. It is never sent to the server, Gemini or the company. Each entry holds the time, blinks per minute, incomplete %, seconds measured, and whether it was demo mode or low light. The latest 20 are kept. Reads and writes are wrapped so blocked or full storage does not break the result screen. A check is marked "rough" if it ran under 2 minutes (`SHORT_SESSION_SEC`), was in demo mode, or was flagged low-light.
+- `src/charts.tsx`: new `TrendChart`. It is an SVG line chart of the last 5 checks, oldest on the left, over the same two reference bands as the session chart, with date and time labels and the rounded rate above each point. Rough checks get a hollow dot and a legend line saying they are only a rough guide (PROJECT.md hard rule 3). It has a screen-reader label listing every point.
+- `src/App.tsx`: a "Show trend" / "Hide trend" button next to "Measure again" on the result screen. It opens a card with the chart, or a message if fewer than 2 checks are saved, the note "Saved only in this browser on this device. Never sent to the server or your company.", and a "Clear my history" link.
+- `src/index.css`: hollow-dot legend marker, chart width cap (600px), layout for the note and clear link.
+
+**Scope note:** PROJECT.md currently says "no long-term tracking in this build". The user asked for this explicitly, and it is local-only, so it does not change what the server or the employer sees. PROJECT.md has not been edited. The team should agree whether it stays in the demo.
+
+**Checked by the AI:** `npm run build` completes. `oxlint` shows no new warnings in the changed files. A temporary test switch (removed afterwards, and confirmed gone in the diff) opened the result screen with six invented history entries, one demo and one low-light. The trend card was rendered in headless Chrome at 1280px and 390px wide, and the AI looked at the screenshots. Only the last 5 were shown, the two rough checks had hollow dots, and the labels were readable at both widths. Not checked: saving after a real camera check, since there was no live face, and "Clear my history" was not clicked in the test.
+
+### 2026-10-18: Measurement keeps running when the user switches to another tab (Chrome and Edge)
+**Asked:** The timer stops when the user goes to a different website. Fix it.
+
+**Files changed:** `src/useEyeTracker.ts`, `src/App.tsx`, `AI_DISCLOSURE.md`.
+
+**Cause:** the frame loop ran on `requestAnimationFrame`, which browsers stop completely in hidden tabs. The camera itself keeps running, so the frames were there but nothing processed them.
+
+**What changed (AI-generated by Claude):**
+- `src/useEyeTracker.ts`: where the browser has `MediaStreamTrackProcessor` (Chrome, Edge), frames are read straight from the camera track and passed to FaceLandmarker as `VideoFrame`s. This is not tied to screen refreshes, so it keeps going in a hidden tab. Each frame is closed after use. If the model rejects the very first frame, it falls back to the old video-element loop, with a console warning, instead of showing an error. Other browsers (Firefox, Safari) still use the old loop and still pause when hidden. Brightness sampling and the eye-ratio maths now take the frame's own size, so they work for both sources. Stop and teardown cancel the frame reader. New snapshot field `background`. The "tab was hidden" banner now only shows in browsers that really pause.
+- `src/App.tsx`: the "Measuring while you work" card says counting carries on in other tabs where that is true, and says to keep the window visible where it is not.
+
+**Not changed:** PROJECT.md still says the window must stay visible. That is now only true for Firefox and Safari.
+
+**Checked by the AI:** `npm run build` completes. The app was run in headless Chrome with Chrome's fake camera and a temporary frame counter (removed afterwards, and confirmed gone). With the page visible, 200 frames reached the model in 10 seconds. After a second tab was opened and focused, the page reported `visibilityState = hidden` and 200 frames still reached the model in 10 seconds, so there was no slowdown. The fake camera has no face, so blink counting and the measured-time clock were not seen advancing in a hidden tab. Not tested with a real webcam, in Edge, Firefox or Safari, on battery saver, or with the tab hidden for long periods (Chrome may treat long-hidden tabs differently).
+
+### 2026-10-18: "Explain my trend": Gemini helps read the trend graph
+**Asked:** Let Gemini help the user interpret the trend graph. Keep it short and make clear it is not medical advice.
+
+**Files changed:** `server.js`, `src/summary.ts`, `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What was done (AI-generated by Claude):**
+- `server.js`: the Gemini call (request, retries, error handling) moved out of `/api/summary` into a shared `askGemini` helper. `/api/summary` behaves as before. New `POST /api/trend` takes up to 5 checks: just each blink rate and whether it was a rough check. Dates and any other fields are ignored. The server works out the direction (went up, went down, about the same, from first to last) and where the latest check sits against the reference ranges. It passes these to Gemini as three plain sentences, so the model never sees field names. The instruction asks for 2 sentences under 35 words, no diagnosis, no conditions, no statistics, and no disclaimer of its own.
+- Retry change: Gemini is no longer retried on 429 (rate limit). Google asks for a wait of about 25 seconds, and quick retries only used up more of the free tier. Retries on 403 and 5xx stay as Shahida wrote them.
+- `src/summary.ts`: `fetchTrendSummary` sends only the rates and rough flags, with a template fallback that is labelled with the reason.
+- `src/App.tsx`, `src/index.css`: an "Explain my trend" button under the trend chart, with the note "Sends only these N blink rates, without dates, to Gemini." Nothing is sent until it is pressed. The reply shows with a fixed app line, "Not medical advice. Eye pain or changes in your sight? See an optician.", plus "Written by Gemini…" or "Template text, not written by Gemini: reason". The history note changed from "Never sent to the server or your company" to "Never sent to your company", because the button can now send the rates to Gemini.
+
+**Checked by the AI:** `npm run build` completes and oxlint shows no warnings in the changed files. With the user's real Gemini key, made-up trends were sent to the local server's `/api/trend`.
+- The first prompt leaked field names ("your latestPosition…") and ran to about 50 words. After two rewrites, eight replies read correctly at 30 to 39 words, and the rough-check case said the trend was only a rough guide.
+- A one-check request gives a 400.
+- `/api/summary` still answers after the refactor.
+- The rapid testing hit the free-tier limit (429, "15 requests per minute"), which led to the retry change above.
+- With a temporary test switch (removed afterwards, and confirmed gone), the trend card was rendered in headless Chrome before and after pressing the button, at 1280px and 390px, and the screenshots were looked at: real Gemini text, the not-medical-advice box and the label all showed.
+- Not checked: the template fallback in the browser, and the flow after a real camera check.
+
+### 2026-10-18: Demo-mode blink reminder pop-up, with an off switch
+**Asked:** In demo mode only, show a pop-up reminding the user to blink when their blink rate falls below the typical screen-use rate (5 to 7 a minute), with an option to turn it off.
+
+**Files changed:** `src/blink.ts`, `src/useEyeTracker.ts`, `src/App.tsx`, `src/index.css`, `AI_DISCLOSURE.md`.
+
+**What was done (AI-generated by Claude):**
+- `src/blink.ts`: two settings, `DEMO_REMINDER_WINDOW_SEC = 20` (the live rate is worked out over the last 20 seconds of measured time) and `DEMO_REMINDER_SNOOZE_SEC = 30` (after "Got it", it stays quiet for 30 measured seconds). Both values were the AI's choice.
+- `src/useEyeTracker.ts`: new snapshot field `liveRate`, blinks per minute over the last 20 measured seconds. It is null until 20 seconds have been measured. Time with no face in view is not counted, as with the main clock.
+- `src/App.tsx`: a `BlinkReminder` pop-up appears only when demo mode is on, reminders are on, a measurement is running, and the live rate is below `SCREEN_RANGE.min` (5, from `reference.ts`). It shows the rate, the 5 to 7 range, "Try a few slow, full blinks.", a "Got it" button, a "Turn off reminders" link, and "Demo mode reminder. Not medical advice." A "Blink reminders (demo mode)" checkbox on the measuring card, on by default and shown only in demo mode, switches it on or off. The snooze resets on a new check or a recalibration.
+- `src/index.css`: pop-up styles (rises in over 0.8s, no flashing, no animation under reduced motion), a lime "Got it" button on the dark card, and checkbox styles.
+
+**Scope note:** PROJECT.md says "no break pop-ups" in this build. The user asked for this explicitly and it is limited to demo mode. PROJECT.md has not been edited.
+
+**Checked by the AI:** `npm run build` completes, with no new lint warnings. A temporary test switch (removed afterwards, and confirmed gone) faked a live rate of 2 a minute in demo mode. In headless Chrome:
+- the pop-up appeared, and the checkbox showed;
+- "Got it" hid it;
+- "Turn off reminders" hid it and unticked the checkbox, and re-ticking brought it back;
+- the demo-mode button is disabled during a check.
+
+Screenshots at 1280px and 390px were looked at. Not checked: the real live rate and the pop-up with a real face and camera, and the 30 second snooze running out. The pop-up only shows while the tab is visible; it is not a system notification.
+
+### 2026-10-18: Demo-mode reminder agreed by the team
+The user confirmed that the team (including Shahida) agreed the demo-mode blink reminder pop-up. So the scope note in the reminder entry above, which says PROJECT.md asks for no break pop-ups, is resolved by team agreement. PROJECT.md itself has not been edited yet. No code was changed.
+
+### 2026-10-18: Disclosure summary brought up to date
+**Asked:** Update AI_DISCLOSURE.md.
+
+**Files changed:** `AI_DISCLOSURE.md` only. No code was changed.
+
+**What was done (by Claude):** the summary sections at the top were updated to cover the work logged today:
+- "Tools used while building" now names both Claude models used (Sonnet 5.5 and Opus 5.5).
+- "AI inside the product" now covers the opt-in Gemini trend explanation (what it receives, that it gets no dates, and that the not-medical-advice line comes from the app) and the rule-based demo-mode reminder.
+- "What AI wrote vs what we wrote" now lists the trend graph, local history, trend explanation, demo reminder and hidden-tab counting.
+- "Honest notes" now covers the Gemini free-tier limit and the no-retry-on-429 change, where trend history is stored, which browsers keep counting in a hidden tab, and that the reminder settings are Claude's choices.
+
+The log entries below were left as written, apart from this entry and the one above.

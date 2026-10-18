@@ -36,6 +36,9 @@ export const MEASURE_SEC = 8 * 60 * 60
 // Finish is allowed once this much has been measured. Demo mode lowers it so the flow is quick on stage.
 export const MIN_FINISH_SEC = 30
 export const DEMO_MIN_FINISH_SEC = 10
+// Demo mode only: a "remember to blink" pop-up when the live rate falls below the typical screen range.
+export const DEMO_REMINDER_WINDOW_SEC = 20 // live rate is worked out over this much measured time
+export const DEMO_REMINDER_SNOOZE_SEC = 30 // after "Got it", stay quiet for this much measured time
 export const SHORT_SESSION_SEC = 120 // under this the result says it is too short to judge (the AI's choice)
 // -----------------------------------------------------------------------------
 

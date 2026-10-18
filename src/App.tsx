@@ -3,13 +3,24 @@ import type { ReactNode, RefObject } from 'react'
 import { useEyeTracker } from './useEyeTracker'
 import type { ErrorKind, MeasureResult, Snapshot } from './useEyeTracker'
 import { BlinkIllustration, OpticianIllustration, PrivacyIllustration } from './Illustrations'
-import { CALIBRATION_MS, CLOSED_RATIO, DEMO_MIN_FINISH_SEC, MEASURE_SEC, MIN_FINISH_SEC, PARTIAL_RATIO, SHORT_SESSION_SEC } from './blink'
-import { fetchSummary } from './summary'
+import {
+  CALIBRATION_MS,
+  CLOSED_RATIO,
+  DEMO_MIN_FINISH_SEC,
+  DEMO_REMINDER_SNOOZE_SEC,
+  DEMO_REMINDER_WINDOW_SEC,
+  MEASURE_SEC,
+  MIN_FINISH_SEC,
+  PARTIAL_RATIO,
+  SHORT_SESSION_SEC,
+} from './blink'
+import { fetchSummary, fetchTrendSummary } from './summary'
 import { shareResult } from './share'
 import type { SummaryResult } from './summary'
-import { bandFor } from './reference'
+import { SCREEN_RANGE, bandFor } from './reference'
 import type { Band } from './reference'
-import { ComparisonChart, SessionChart } from './charts'
+import { ComparisonChart, SessionChart, TrendChart } from './charts'
+import { TREND_SIZE, clearHistory, loadHistory, saveCheck } from './history'
 import Employer from './Employer'
 
 const ERROR_COPY: Record<ErrorKind, { title: string; body: string }> = {
@@ -135,18 +146,51 @@ function Banner({ children }: { children: ReactNode }) {
   )
 }
 
+// Demo mode only. Calm: fades in, never flashes, and can be dismissed or switched off.
+function BlinkReminder({ rate, onDismiss, onTurnOff }: { rate: number; onDismiss: () => void; onTurnOff: () => void }) {
+  return (
+    <div className="reminder" role="alertdialog" aria-labelledby="reminder-title" aria-describedby="reminder-body">
+      <div className="card card-forest">
+        <div className="card-art">
+          <BlinkIllustration />
+        </div>
+        <h2 id="reminder-title">Remember to blink.</h2>
+        <p id="reminder-body">
+          You blinked about {Math.round(rate)} times a minute over the last {DEMO_REMINDER_WINDOW_SEC} seconds, below the typical screen range of {SCREEN_RANGE.min} to{' '}
+          {SCREEN_RANGE.max}. Try a few slow, full blinks.
+        </p>
+        <div className="reminder-actions">
+          <button className="pill pill-secondary" onClick={onDismiss} autoFocus>
+            Got it
+          </button>
+          <button className="link" onClick={onTurnOff}>
+            Turn off reminders
+          </button>
+        </div>
+        <p className="fineprint">Demo mode reminder. Not medical advice.</p>
+      </div>
+    </div>
+  )
+}
+
 function Check({
   s,
   videoRef,
   onRecalibrate,
   onFinish,
   onStop,
+  demo,
+  reminders,
+  setReminders,
 }: {
   s: Snapshot
   videoRef: RefObject<HTMLVideoElement | null>
   onRecalibrate: () => void
   onFinish: () => void
   onStop: () => void
+  demo: boolean
+  reminders: boolean
+  setReminders: (on: boolean) => void
 }) {
   const loading = s.phase === 'loading'
   const calibrating = s.phase === 'calibrating'
@@ -194,11 +238,21 @@ function Check({
         {s.phase === 'tracking' && (
           <div className="card card-pale">
             <h3>Measuring while you work</h3>
-            <p>Carry on with your work and keep this window visible beside it.</p>
+            <p>
+              {s.background
+                ? 'Carry on with your work. You can switch to other tabs and windows: counting carries on as long as this tab stays open.'
+                : 'Carry on with your work and keep this window visible beside it. This browser pauses the camera when the tab is hidden.'}
+            </p>
             <p className="timer">{s.measuring ? `${clock(s.measureElapsedSec)} measured` : 'Starting…'}</p>
             <button className="pill pill-primary" onClick={onFinish} disabled={!s.canFinish}>
               {s.canFinish ? 'Finish and see result' : s.measuring ? `Finish unlocks in ${s.finishInSec}s` : 'Finish and see result'}
             </button>
+            {demo && (
+              <label className="toggle">
+                <input type="checkbox" checked={reminders} onChange={(e) => setReminders(e.target.checked)} />
+                <span>Blink reminders (demo mode)</span>
+              </label>
+            )}
           </div>
         )}
       </div>
@@ -256,9 +310,66 @@ function ShareCard({ r }: { r: MeasureResult }) {
   )
 }
 
+// The last few checks from this browser's own storage. Nothing here is sent anywhere.
+function TrendCard() {
+  const [checks, setChecks] = useState(() => loadHistory().slice(-TREND_SIZE))
+  const [explain, setExplain] = useState<SummaryResult | 'loading' | null>(null)
+  const clear = () => {
+    clearHistory()
+    setChecks([])
+    setExplain(null)
+  }
+  const askGemini = async () => {
+    setExplain('loading')
+    setExplain(await fetchTrendSummary(checks))
+  }
+
+  return (
+    <div className="card card-pale" aria-live="polite">
+      <h3>Your last {TREND_SIZE} checks</h3>
+      {checks.length >= 2 ? (
+        <>
+          <TrendChart checks={checks} />
+          {explain === null ? (
+            <div className="trend-explain">
+              <button className="pill pill-primary" onClick={askGemini}>
+                Explain my trend
+              </button>
+              <p className="fineprint">Sends only these {checks.length} blink rates, without dates, to Gemini.</p>
+            </div>
+          ) : explain === 'loading' ? (
+            <p>Reading your trend…</p>
+          ) : (
+            <div className="trend-explain">
+              <p className="summary-text">{explain.text}</p>
+              <p className="callout">Not medical advice. Eye pain or changes in your sight? See an optician.</p>
+              <p className="fineprint">
+                {explain.source === 'gemini' ? 'Written by Gemini from the blink rates above.' : `Template text, not written by Gemini${explain.note ? `: ${explain.note}` : ''}.`}
+              </p>
+            </div>
+          )}
+        </>
+      ) : (
+        <p>
+          {checks.length === 1 ? 'Only this check is saved so far.' : 'No checks are saved in this browser.'} Do at least two checks to see a trend.
+        </p>
+      )}
+      <div className="trend-actions">
+        <p className="fineprint">Saved only in this browser on this device. Never sent to your company.</p>
+        {checks.length > 0 && (
+          <button className="link" onClick={clear}>
+            Clear my history
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function Result({ r, summary, onAgain, onBack }: { r: MeasureResult; summary: SummaryResult | null; onAgain: () => void; onBack: () => void }) {
   const noReading = r.blinks === 0
   const band = bandFor(r.blinksPerMinute)
+  const [showTrend, setShowTrend] = useState(false)
 
   return (
     <section className="hero result">
@@ -331,9 +442,13 @@ function Result({ r, summary, onAgain, onBack }: { r: MeasureResult; summary: Su
           {r.lowLight && <p className="note">The image was dark for part of this check, so the reading may be less reliable. Try again with more light on your face.</p>}
         </>
       )}
+      {showTrend && <TrendCard />}
       <div className="hero-actions">
         <button className="pill pill-primary pill-big" onClick={onAgain}>
           Measure again
+        </button>
+        <button className="pill pill-secondary pill-big" onClick={() => setShowTrend(!showTrend)} aria-expanded={showTrend}>
+          {showTrend ? 'Hide trend' : 'Show trend'}
         </button>
         <PrivacyBadge />
       </div>
@@ -356,6 +471,16 @@ export default function App() {
   const handled = useRef<MeasureResult | null>(null) // the result we already reacted to (effects can fire twice in dev)
   const { snap: s, start, stop, measure, finishEarly, recalibrate } = useEyeTracker(videoRef)
   const minFinishSec = demo ? DEMO_MIN_FINISH_SEC : MIN_FINISH_SEC
+  const [reminders, setReminders] = useState(true)
+  const [quietUntilSec, setQuietUntilSec] = useState(0) // in measured seconds, after "Got it"
+  const showReminder =
+    demo &&
+    reminders &&
+    step === 'check' &&
+    s.measuring &&
+    s.liveRate !== null &&
+    s.liveRate < SCREEN_RANGE.min &&
+    s.measureElapsedSec >= quietUntilSec
 
   // Once calibration is done, measure. If the user recalibrates, the measurement is dropped and
   // this runs again when the new calibration finishes.
@@ -364,15 +489,17 @@ export default function App() {
     measure(MEASURE_SEC, minFinishSec).then((r) => {
       if (!r || handled.current === r) return
       handled.current = r
+      if (r.blinks > 0) saveCheck(r, demo) // a check with no blinks is a tracking failure, not a reading
       stop() // camera off as soon as the measurement is done
       setResult(r)
       setSummary(null)
       setStep('result')
       if (r.blinks > 0) fetchSummary(r).then((res) => handled.current === r && setSummary(res))
     })
-  }, [step, s.phase, measure, minFinishSec, stop])
+  }, [step, s.phase, measure, minFinishSec, stop, demo])
 
   const begin = () => {
+    setQuietUntilSec(0)
     handled.current = null
     setResult(null)
     setSummary(null)
@@ -410,10 +537,30 @@ export default function App() {
           (s.phase === 'error' && s.error ? (
             <ErrorScreen error={s.error} onRetry={start} onBack={home} />
           ) : (
-            <Check s={s} videoRef={videoRef} onRecalibrate={recalibrate} onFinish={finishEarly} onStop={home} />
+            <Check
+              s={s}
+              videoRef={videoRef}
+              onRecalibrate={() => {
+                setQuietUntilSec(0) // measured time restarts after a recalibration
+                recalibrate()
+              }}
+              onFinish={finishEarly}
+              onStop={home}
+              demo={demo}
+              reminders={reminders}
+              setReminders={setReminders}
+            />
           ))}
         {!EMPLOYER_VIEW && step === 'result' && result && <Result r={result} summary={summary} onAgain={begin} onBack={home} />}
       </main>
+
+      {showReminder && s.liveRate !== null && (
+        <BlinkReminder
+          rate={s.liveRate}
+          onDismiss={() => setQuietUntilSec(s.measureElapsedSec + DEMO_REMINDER_SNOOZE_SEC)}
+          onTurnOff={() => setReminders(false)}
+        />
+      )}
     </>
   )
 }
